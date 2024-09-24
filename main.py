@@ -2,11 +2,12 @@ import logging
 import openai
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.templating import Jinja2Templates
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 import requests
 import os
-import io  # Ensure this is imported
+import io
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +17,9 @@ app = FastAPI()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize Jinja2 templates
+templates = Jinja2Templates(directory="templates")
 
 class TwilioWhatsAppHandler:
 
@@ -118,6 +122,11 @@ async def whatsapp(request: Request):
     logger.info(f"Request body: {body}")
     return await twilio_whatsapp_handler.handle_whatsapp_request(request)
 
+@app.get("/transcription")
+async def get_transcription(request: Request):
+    transcription = twilio_whatsapp_handler.transcription
+    return templates.TemplateResponse("transcription.html", {"request": request, "transcription": transcription})
+
 # Log environment variables to ensure they're loaded correctly (masking sensitive data)
 logger.info(f"TWILIO_ACCOUNT_SID: {os.getenv('TWILIO_ACCOUNT_SID')[:5]}...")
 logger.info(f"TWILIO_AUTH_TOKEN: {os.getenv('TWILIO_AUTH_TOKEN')[:5]}...")
@@ -126,3 +135,5 @@ logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:5]}...")
 # Log OpenAI library version and module path
 logger.info(f"OpenAI Library Version: {openai.__version__}")
 logger.info(f"OpenAI Module File: {openai.__file__}")
+
+
