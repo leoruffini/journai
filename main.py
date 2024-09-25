@@ -9,6 +9,11 @@ import requests
 import os
 import io
 from dotenv import load_dotenv
+import datetime
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request as GoogleRequest
 
 load_dotenv()
 
@@ -21,15 +26,85 @@ logger = logging.getLogger(__name__)
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
+# Google Docs Updater Class
+class GoogleDocsUpdater:
+
+    def __init__(self, document_id):
+        self.SCOPES = ['https://www.googleapis.com/auth/documents']
+        self.document_id = document_id
+        self.creds = None
+        self.authenticate()
+
+    def authenticate(self):
+        """Authenticate and create the credentials object."""
+        # Check if there are already stored credentials
+        if os.path.exists('token.json'):
+            self.creds = Credentials.from_authorized_user_file('token.json', self.SCOPES)
+
+        # If there are no valid credentials, authenticate the user
+        if not self.creds or not self.creds.valid:
+            if self.creds and self.creds.expired and self.creds.refresh_token:
+                self.creds.refresh(GoogleRequest())  # Use Google OAuth's Request
+            else:
+                # Set up a static redirect URI and force the OAuth flow to use it (Port 8001)
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'client_secret.json', self.SCOPES)
+                
+                # Explicitly set the redirect_uri to match the one registered in Google Cloud
+                flow.redirect_uri = 'http://localhost:8001/oauth2callback'  
+
+                # Run the local server without passing redirect_uri again
+                self.creds = flow.run_local_server(port=8001)
+
+            # Save the credentials for the next run
+            with open('token.json', 'w') as token:
+                token.write(self.creds.to_json())
+
+    def update_document(self, transcription_text):
+        """Insert the transcription text into the Google Doc."""
+        try:
+            # Create a service object to interact with the Docs API
+            service = build('docs', 'v1', credentials=self.creds)
+
+            # Get the current timestamp
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Define the content to insert
+            content = f"\n\nTranscription (at {timestamp}):\n{transcription_text}\n"
+
+            # Create the request body for the batchUpdate
+            requests = [
+                {
+                    'insertText': {
+                        'location': {
+                            'index': 1,  # Insert after the first index (beginning of the doc)
+                        },
+                        'text': content
+                    }
+                }
+            ]
+
+            # Send the request to update the document
+            result = service.documents().batchUpdate(
+                documentId=self.document_id,
+                body={'requests': requests}
+            ).execute()
+
+            logger.info("Document updated successfully.")
+        except Exception as e:
+            logger.error(f"An error occurred while updating the Google Doc: {e}")
+
+# Twilio WhatsApp Handler Class
 class TwilioWhatsAppHandler:
 
-    def __init__(self, account_sid: str, auth_token: str, openai_api_key: str):
+    def __init__(self, account_sid: str, auth_token: str, openai_api_key: str, google_docs_updater: GoogleDocsUpdater):
         self.account_sid = account_sid
         self.auth_token = auth_token
         self.validator = RequestValidator(auth_token)
         self.openai_api_key = openai_api_key
         self.twilio_client = Client(account_sid, auth_token)
         self.transcription = None  # Initialize transcription attribute
+        self.google_docs_updater = google_docs_updater  # Add the Google Docs updater instance
 
     async def handle_whatsapp_request(self, request: Request):
         try:
@@ -66,6 +141,9 @@ class TwilioWhatsAppHandler:
             # Log the transcription
             logger.info(f"Transcription: {self.transcription}")
 
+            # Update Google Docs with the transcription and timestamp
+            self.google_docs_updater.update_document(self.transcription)
+
             # Return a success message
             return JSONResponse(content={"message": "Voice message processed successfully", "transcription": self.transcription}, status_code=200)
 
@@ -80,7 +158,7 @@ class TwilioWhatsAppHandler:
         try:
             logger.info(f"Downloading voice message from URL: {voice_message_url}")
 
-            # Download the media content directly
+            # Download the media content directly using Twilio credentials
             response = requests.get(voice_message_url, auth=(self.account_sid, self.auth_token))
             response.raise_for_status()
 
@@ -107,22 +185,23 @@ class TwilioWhatsAppHandler:
             logger.exception("Error transcribing voice message")
             return f"Error transcribing voice message: {str(e)}"
 
+# Initialize Google Docs Updater with the Document ID
+google_docs_updater = GoogleDocsUpdater('1LRPBsPdYkgQawy5LxCClyeIrZ-F8T_iJqq2FCQSXNVI')
+
 # Create an instance of TwilioWhatsAppHandler
 twilio_whatsapp_handler = TwilioWhatsAppHandler(
     account_sid=os.getenv('TWILIO_ACCOUNT_SID'),
     auth_token=os.getenv('TWILIO_AUTH_TOKEN'),
-    openai_api_key=os.getenv('OPENAI_API_KEY')
+    openai_api_key=os.getenv('OPENAI_API_KEY'),
+    google_docs_updater=google_docs_updater  # Pass the Google Docs updater to the handler
 )
 
-@app.post("/whatsapp")
+@app.post("/whatsapp", response_model=None)  # Disable response model validation
 async def whatsapp(request: Request):
     logger.info("Received request to /whatsapp endpoint")
-    logger.info(f"Request headers: {request.headers}")
-    body = await request.body()
-    logger.info(f"Request body: {body}")
     return await twilio_whatsapp_handler.handle_whatsapp_request(request)
 
-@app.get("/transcription")
+@app.get("/transcription", response_model=None)  # Disable response model validation
 async def get_transcription(request: Request):
     transcription = twilio_whatsapp_handler.transcription
     return templates.TemplateResponse("transcription.html", {"request": request, "transcription": transcription})
@@ -131,9 +210,3 @@ async def get_transcription(request: Request):
 logger.info(f"TWILIO_ACCOUNT_SID: {os.getenv('TWILIO_ACCOUNT_SID')[:5]}...")
 logger.info(f"TWILIO_AUTH_TOKEN: {os.getenv('TWILIO_AUTH_TOKEN')[:5]}...")
 logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:5]}...")
-
-# Log OpenAI library version and module path
-logger.info(f"OpenAI Library Version: {openai.__version__}")
-logger.info(f"OpenAI Module File: {openai.__file__}")
-
-
