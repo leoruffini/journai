@@ -51,8 +51,8 @@ class GoogleDocsUpdater:
                     'client_secret.json', self.SCOPES)
                 
                 # Explicitly set the redirect_uri to match the one registered in Google Cloud
-                flow.redirect_uri = 'flow.redirect_uri = 'https://journai.onrender.com/oauth2callback''  
-
+                flow.redirect_uri = 'https://journai.onrender.com/oauth2callback'
+                
                 # Run the local server without passing redirect_uri again
                 self.creds = flow.run_local_server(port=8001)
 
