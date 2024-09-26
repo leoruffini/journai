@@ -46,12 +46,12 @@ class GoogleDocsUpdater:
             if self.creds and self.creds.expired and self.creds.refresh_token:
                 self.creds.refresh(GoogleRequest())  # Use Google OAuth's Request
             else:
-                # Set up a static redirect URI and force the OAuth flow to use it (Port 8001)
+                # Set up a static redirect URI and force the OAuth flow to use it
                 flow = InstalledAppFlow.from_client_secrets_file(
                     'client_secret.json', self.SCOPES)
                 
                 # Explicitly set the redirect_uri to match the one registered in Google Cloud
-                flow.redirect_uri = 'http://localhost:8001/oauth2callback'  
+                flow.redirect_uri = 'flow.redirect_uri = 'https://journai.onrender.com/oauth2callback''  
 
                 # Run the local server without passing redirect_uri again
                 self.creds = flow.run_local_server(port=8001)
