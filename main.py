@@ -156,7 +156,6 @@ class TwilioWhatsAppHandler:
             # Get the phone number from the form data and remove the "whatsapp:" prefix
             phone_number = form_data.get('From', '')
             phone_number = phone_number.replace('whatsapp:', '')
-            
 
             # Generate embedding for the transcription
             embedding = self.generate_embedding(self.transcription)
@@ -173,6 +172,9 @@ class TwilioWhatsAppHandler:
             # Update Google Docs with the transcription and timestamp
             self.google_docs_updater.update_document(self.transcription)
 
+            # After processing the transcription
+            await self.send_transcription(phone_number, self.transcription)
+
             # Return a success message
             return JSONResponse(content={"message": "Voice message processed successfully", "transcription": self.transcription}, status_code=200)
 
@@ -183,6 +185,17 @@ class TwilioWhatsAppHandler:
             logger.exception("Error handling WhatsApp request")
             db.rollback()  # Roll back the transaction in case of error
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
+
+    async def send_transcription(self, to_number: str, transcription: str):
+        try:
+            message = self.twilio_client.messages.create(
+                body=f"Here's your transcription:\n{transcription}",
+                from_='whatsapp:+14155238886',  # Your Twilio WhatsApp number
+                to=f'whatsapp:{to_number}'
+            )
+            logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
+        except Exception as e:
+            logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
 
     async def transcribe_voice_message(self, voice_message_url: str) -> str:
         try:
