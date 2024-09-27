@@ -1,6 +1,7 @@
 import logging
 import openai
-from fastapi import FastAPI, Request, HTTPException
+from openai import OpenAI
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 from twilio.request_validator import RequestValidator
@@ -14,6 +15,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request as GoogleRequest
+from sqlalchemy.orm import Session
+from database import get_db, Message
 
 load_dotenv()
 
@@ -105,8 +108,17 @@ class TwilioWhatsAppHandler:
         self.twilio_client = Client(account_sid, auth_token)
         self.transcription = None  # Initialize transcription attribute
         self.google_docs_updater = google_docs_updater  # Add the Google Docs updater instance
+        openai.api_key = self.openai_api_key  # Set OpenAI API key
+        self.openai_client = OpenAI(api_key=openai_api_key)  # Create OpenAI client
 
-    async def handle_whatsapp_request(self, request: Request):
+    def generate_embedding(self, text: str) -> list[float]:
+        response = self.openai_client.embeddings.create(
+            input=text,
+            model="text-embedding-ada-002"
+        )
+        return response.data[0].embedding
+
+    async def handle_whatsapp_request(self, request: Request, db: Session = Depends(get_db)):
         try:
             logger.info("Received WhatsApp request")
             # Validate the request
@@ -141,6 +153,23 @@ class TwilioWhatsAppHandler:
             # Log the transcription
             logger.info(f"Transcription: {self.transcription}")
 
+            # Get the phone number from the form data and remove the "whatsapp:" prefix
+            phone_number = form_data.get('From', '')
+            phone_number = phone_number.replace('whatsapp:', '')
+            
+
+            # Generate embedding for the transcription
+            embedding = self.generate_embedding(self.transcription)
+
+            # Store message in database
+            db_message = Message(
+                phone_number=phone_number,  # This will now be without the "whatsapp:" prefix
+                text=self.transcription,
+                embedding=embedding
+            )
+            db.add(db_message)
+            db.commit()
+
             # Update Google Docs with the transcription and timestamp
             self.google_docs_updater.update_document(self.transcription)
 
@@ -152,6 +181,7 @@ class TwilioWhatsAppHandler:
             return JSONResponse(content={"message": str(he)}, status_code=he.status_code)
         except Exception as e:
             logger.exception("Error handling WhatsApp request")
+            db.rollback()  # Roll back the transaction in case of error
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
 
     async def transcribe_voice_message(self, voice_message_url: str) -> str:
@@ -197,9 +227,9 @@ twilio_whatsapp_handler = TwilioWhatsAppHandler(
 )
 
 @app.post("/whatsapp", response_model=None)  # Disable response model validation
-async def whatsapp(request: Request):
+async def whatsapp(request: Request, db: Session = Depends(get_db)):
     logger.info("Received request to /whatsapp endpoint")
-    return await twilio_whatsapp_handler.handle_whatsapp_request(request)
+    return await twilio_whatsapp_handler.handle_whatsapp_request(request, db)
 
 @app.get("/transcription", response_model=None)  # Disable response model validation
 async def get_transcription(request: Request):
