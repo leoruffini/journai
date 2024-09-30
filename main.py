@@ -190,7 +190,7 @@ class TwilioWhatsAppHandler:
         try:
             message = self.twilio_client.messages.create(
                 body=f"Here's your transcription:\n{transcription}",
-                from_='whatsapp:+14155238886',  # Your Twilio WhatsApp number
+                from_='whatsapp:+12254200006',  # Your Twilio WhatsApp number
                 to=f'whatsapp:{to_number}'
             )
             logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
