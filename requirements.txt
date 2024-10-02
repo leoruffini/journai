@@ -14,3 +14,4 @@ google-api-python-client
 sqlalchemy
 psycopg2-binary
 alembic
+stripe
