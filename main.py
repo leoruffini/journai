@@ -85,6 +85,22 @@ class TwilioWhatsAppHandler:
         response = self.openai_client.embeddings.create(input=text, model="text-embedding-ada-002")
         return response.data[0].embedding
 
+    async def generate_response(self, message: str, context: str) -> str:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                messages=[
+                    {"role": "system", "content": """You are Ada, a concise AI assistant for voice transcription. 
+                    Encourage users to send voice messages or subscribe. Keep all responses under 50 words.
+                    Do not offer free trials to users who have used all their free trials."""},
+                    {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
+                ]
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error generating AI response: {str(e)}")
+            return "Send a voice message for transcription or subscribe to continue using the service."
+
     async def handle_whatsapp_request(self, request: Request, db: Session = Depends(get_db)):
         try:
             logger.info("Received WhatsApp request")
@@ -121,12 +137,21 @@ class TwilioWhatsAppHandler:
             media_type = form_data.get('MediaContentType0')
             if not media_type:
                 # Handle text message
+                user_message = form_data.get('Body', '')
+                
                 if user.free_trial_remaining > 0:
-                    await self.send_text_message_with_free_trials(phone_number, user.free_trial_remaining)
-                elif not self.is_whitelisted(db, phone_number):
-                    await self.send_subscription_message(phone_number)
+                    context = f"User has {user.free_trial_remaining} free trials remaining. Encourage them to use a trial."
+                elif self.is_whitelisted(db, phone_number):
+                    context = "User is subscribed. Encourage them to use the service."
                 else:
-                    await self.send_subscribed_user_text_message(phone_number)
+                    context = "User has no free trials left and is not subscribed. Acknowledge their message, and gently encourage subscription."
+                
+                ai_response = await self.generate_response(user_message, context)
+                
+                if not self.is_whitelisted(db, phone_number) and user.free_trial_remaining == 0:
+                    ai_response += "\n\n🔗 Subscribe here: https://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+                
+                await self.send_ai_response(phone_number, ai_response)
                 return JSONResponse(content={"message": "Text message handled"}, status_code=200)
 
             if user.free_trial_remaining > 0:
@@ -204,6 +229,43 @@ class TwilioWhatsAppHandler:
             db.rollback()
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
 
+    async def generate_response(self, message: str, context: str) -> str:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                messages=[
+                    {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
+                    Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
+                    Keep responses under 50 words. Be responsive to the user's message, but always relate back to the transcription service.
+                    Do not offer free trials or transcription services to users who have used all their free trials and are not subscribed.
+                    For users with free trials, encourage them to use the service.
+                    For subscribed users, remind them of the benefits and encourage use.
+                    For users without free trials or subscription, focus on the benefits of subscribing."""},
+                    {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
+                ]
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error generating AI response: {str(e)}")
+            return "I'm here to help with voice transcription. How can I assist you today?"
+
+    async def generate_response(self, message: str, context: str) -> str:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                messages=[
+                    {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
+                    Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
+                    Keep responses under 50 words. Be responsive to the user's message, but always relate back to the transcription service.
+                    Do not offer free trials to users who have used all their free trials."""},
+                    {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
+                ]
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error generating AI response: {str(e)}")
+            return "I'm here to help with voice transcription. How can I assist you today?"
+
     async def send_transcription(self, to_number: str, transcription: str):
         try:
             message = self.twilio_client.messages.create(
@@ -245,26 +307,18 @@ class TwilioWhatsAppHandler:
         return whitelisted is not None
 
     async def send_subscription_message(self, to_number: str):
-        try:
-            message = self.twilio_client.messages.create(
-                body="Hi there! 🧚‍♂️ It looks like your free trial has expired. To continue enjoying my transcription service, please subscribe. I hope to keep assisting you! 🎙️✨ - *Ada*.\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc\u200B",
-                from_='whatsapp:+12254200006',
-                to=f'whatsapp:{to_number}'
-            )
-            logger.info(f"Subscription message sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"Failed to send subscription message to {to_number}: {str(e)}")
+        context = "User's free trial has expired and they need to subscribe."
+        message = "Subscription needed"
+        response = await self.generate_response(message, context)
+        response += "\n\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        await self.send_ai_response(to_number, response)
 
     async def send_welcome_message(self, to_number: str):
-        try:
-            message = self.twilio_client.messages.create(
-                body="Welcome to Ada! 🎉\n\nYou have 3 free transcriptions to try our service. Enjoy!",
-                from_='whatsapp:+12254200006',
-                to=f'whatsapp:{to_number}'
-            )
-            logger.info(f"Welcome message sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"Failed to send welcome message to {to_number}: {str(e)}")
+        context = "New user with 3 free trials. Encourage them to try the service immediately."
+        message = "Welcome to Ada!"
+        response = await self.generate_response(message, context)
+        response += "\n\nYou have 3 free transcriptions to try our service. Why not start now? Send me a voice message, and I'll transcribe it for you!"
+        await self.send_ai_response(to_number, response)
 
     async def send_subscription_confirmation(self, to_number: str):
         try:
@@ -289,40 +343,18 @@ class TwilioWhatsAppHandler:
             logger.error(f"Failed to send subscription cancelled message to {to_number}: {str(e)}")
 
     async def send_last_free_trial_message(self, to_number: str):
-        try:
-            message = self.twilio_client.messages.create(
-                body=("🎉 Congratulations on completing your free trial with *Ada*! 🎉\n"
-                      "I hope you've enjoyed it! 🌟\n\n"
-                      "🔗 Please subscribe now:\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
-                      "\n\nYou'll get:\n"
-                      "✔ Unlimited voice-to-text transcriptions\n"
-                      "✔ Priority processing\n"
-                      "✔ Access to upcoming premium features\n\n"
-                      "I'm excited to keep assisting you! 🚀\n"
-                      "- Your AI assistant, *Ada* 🧚‍♂️"),
-                from_='whatsapp:+12254200006',
-                to=f'whatsapp:{to_number}'
-            )
-            logger.info(f"Last free trial message sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"Failed to send last free trial message to {to_number}: {str(e)}")
+        context = "User has just used their last free trial."
+        message = "Last free trial used"
+        response = await self.generate_response(message, context)
+        response += "\n\n🔗 Please subscribe now:\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        await self.send_ai_response(to_number, response)
 
     async def send_subscription_reminder(self, to_number: str):
-        try:
-            message = self.twilio_client.messages.create(
-                body="Cheers! 🤗 Please subscribe to continue enjoying my service:\n\n"
-                     "🎙️ Unlimited voice-to-text transcriptions\n"
-                     "🏁 Priority processing\n"
-                     "🚀 Access to upcoming premium features\n\n"
-                     "🔗 https://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
-                     "\n\nI'm excited to keep assisting you!\n"
-                     "🧚‍♂️ *Ada*, your AI assistant.\n",
-                from_='whatsapp:+12254200006',
-                to=f'whatsapp:{to_number}'
-            )
-            logger.info(f"Subscription reminder sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"Failed to send subscription reminder to {to_number}: {str(e)}")
+        context = "User needs to subscribe to continue using the service."
+        message = "Subscription reminder"
+        response = await self.generate_response(message, context)
+        response += "\n\n🔗 https://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        await self.send_ai_response(to_number, response)
 
     async def send_unsupported_media_message(self, to_number: str, media_type: str):
         try:
@@ -359,6 +391,17 @@ class TwilioWhatsAppHandler:
             logger.info(f"Subscribed user text message sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
             logger.error(f"Failed to send subscribed user text message to {to_number}: {str(e)}")
+
+    async def send_ai_response(self, to_number: str, response: str):
+        try:
+            message = self.twilio_client.messages.create(
+                body=response,
+                from_='whatsapp:+12254200006',
+                to=f'whatsapp:{to_number}'
+            )
+            logger.info(f"AI response sent to {to_number}. Message SID: {message.sid}")
+        except Exception as e:
+            logger.error(f"Failed to send AI response to {to_number}: {str(e)}")
 
 # Initialize Google Docs Updater with the Document ID
 #google_docs_updater = GoogleDocsUpdater('1LRPBsPdYkgQawy5LxCClyeIrZ-F8T_iJqq2FCQSXNVI')
