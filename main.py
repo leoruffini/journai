@@ -232,7 +232,7 @@ class TwilioWhatsAppHandler:
     async def generate_response(self, message: str, context: str) -> str:
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
                     Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
@@ -252,12 +252,15 @@ class TwilioWhatsAppHandler:
     async def generate_response(self, message: str, context: str) -> str:
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
                     Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
                     Keep responses under 50 words. Be responsive to the user's message, but always relate back to the transcription service.
-                    Do not offer free trials to users who have used all their free trials."""},
+                    Do not offer free trials to users who have used all their free trials and are not subscribed. Instead, focus on the benefits of subscribing.
+                    For users with free trials, encourage them to use the service.
+                    For subscribed users, remind them of the benefits and encourage use.
+                    . """},
                     {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
                 ]
             )
@@ -529,3 +532,5 @@ async def cancel(request: Request):
 
 # Retrieve database info
 print(f"CONNECTED TO DATABASE: {DATABASE_URL}")
+
+IS_LOCAL = os.getenv('IS_LOCAL', 'false').lower() == 'true'
