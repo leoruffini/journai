@@ -5,6 +5,7 @@ from database import DATABASE_URL
 from fastapi import FastAPI, Request, HTTPException, Depends, Form
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi import HTTPException
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 import requests
@@ -12,14 +13,14 @@ import os
 import io
 from dotenv import load_dotenv
 import datetime
-#from google.oauth2.credentials import Credentials
-#from googleapiclient.discovery import build
-#from google_auth_oauthlib.flow import InstalledAppFlow
-#from google.auth.transport.requests import Request as GoogleRequest
 from sqlalchemy.orm import Session
 from database import get_db, Message, WhitelistedNumber, User
 import stripe
 from datetime import datetime, timezone, timedelta
+import uuid
+from sqlalchemy import text
+from fastapi.responses import Response
+
 
 load_dotenv()
 
@@ -32,54 +33,19 @@ logger = logging.getLogger(__name__)
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
-# Google Docs Updater Class
-# class GoogleDocsUpdater:
-#     def __init__(self, document_id):
-#         self.SCOPES = ['https://www.googleapis.com/auth/documents']
-#         self.document_id = document_id
-#         self.creds = None
-#         self.authenticate()
-
-#     def authenticate(self):
-#         """Authenticate and create the credentials object."""
-#         if os.path.exists('token.json'):
-#             self.creds = Credentials.from_authorized_user_file('token.json', self.SCOPES)
-#         if not self.creds or not self.creds.valid:
-#             if self.creds and self.creds.expired and self.creds.refresh_token:
-#                 self.creds.refresh(GoogleRequest())
-#             else:
-#                 flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', self.SCOPES)
-#                 flow.redirect_uri = 'https://journai.onrender.com/oauth2callback'
-#                 self.creds = flow.run_local_server(port=8001)
-#             with open('token.json', 'w') as token:
-#                 token.write(self.creds.to_json())
-
-#     def update_document(self, transcription_text):
-#         """Insert the transcription text into the Google Doc."""
-#         try:
-#             service = build('docs', 'v1', credentials=self.creds)
-#             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-#             content = f"\n\nTranscription (at {timestamp}):\n{transcription_text}\n"
-#             requests = [{'insertText': {'location': {'index': 1}, 'text': content}}]
-#             result = service.documents().batchUpdate(documentId=self.document_id, body={'requests': requests}).execute()
-#             logger.info("Document updated successfully.")
-#         except Exception as e:
-#             logger.error(f"An error occurred while updating the Google Doc: {e}")
+BASE_URL = os.getenv('BASE_URL', 'https://journai.onrender.com')
 
 # Twilio WhatsApp Handler Class
 class TwilioWhatsAppHandler:
     def __init__(self, account_sid: str, auth_token: str, openai_api_key: str):
-        # Remove google_docs_updater parameter
         self.account_sid = account_sid
         self.auth_token = auth_token
         self.validator = RequestValidator(auth_token)
         self.openai_api_key = openai_api_key
         self.twilio_client = Client(account_sid, auth_token)
         self.transcription = None
-        # Remove self.google_docs_updater = google_docs_updater
         openai.api_key = self.openai_api_key
         self.openai_client = OpenAI(api_key=openai_api_key)
-
 
     def generate_embedding(self, text: str) -> list[float]:
         response = self.openai_client.embeddings.create(input=text, model="text-embedding-ada-002")
@@ -88,7 +54,7 @@ class TwilioWhatsAppHandler:
     async def generate_response(self, message: str, context: str) -> str:
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # or "gpt-3.5-turbo" if GPT-4 is not available
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": """You are Ada, a concise AI assistant for voice transcription. 
                     Encourage users to send voice messages or subscribe. Keep all responses under 50 words.
@@ -122,15 +88,22 @@ class TwilioWhatsAppHandler:
                 return JSONResponse(content={"message": "Invalid request"}, status_code=400)
 
             phone_number = form_data.get('From', '').replace('whatsapp:', '')
-
             user = db.query(User).filter_by(phone_number=phone_number).first()
+            is_voice_message = form_data.get('MediaContentType0') == 'audio/ogg'
+
             if not user:
-                # New user, welcome them and enable free trial
+                # New user
                 user = User(phone_number=phone_number)
                 db.add(user)
                 db.commit()
-                await self.send_welcome_message(phone_number)
-                return JSONResponse(content={"message": "Welcome message sent"}, status_code=200)
+                
+                if is_voice_message:
+                    await self.send_welcome_with_transcription_info(phone_number)
+                else:
+                    await self.send_welcome_message(phone_number)
+                
+                if not is_voice_message:
+                    return JSONResponse(content={"message": "Welcome message sent"}, status_code=200)
 
             logger.info(f"User found: {user.phone_number}, Free trials remaining: {user.free_trial_remaining}")
 
@@ -181,7 +154,8 @@ class TwilioWhatsAppHandler:
                 db.add(db_message)
                 db.commit()
 
-                await self.send_transcription(phone_number, self.transcription)
+                # Pass the db session to send_transcription
+                await self.send_transcription(phone_number, self.transcription, db)
 
                 # If this was the last free trial, send the last free trial message
                 if user.free_trial_remaining == 0:
@@ -217,7 +191,8 @@ class TwilioWhatsAppHandler:
                     db.add(db_message)
                     db.commit()
 
-                    await self.send_transcription(phone_number, self.transcription)
+                    # Pass the db session to send_transcription
+                    await self.send_transcription(phone_number, self.transcription, db)
 
                     return JSONResponse(content={"message": "Voice message processed successfully", "transcription": self.transcription}, status_code=200)
 
@@ -232,7 +207,7 @@ class TwilioWhatsAppHandler:
     async def generate_response(self, message: str, context: str) -> str:
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o-mini",  # or "gpt-3.5-turbo" if GPT-4 is not available
                 messages=[
                     {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
                     Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
@@ -249,36 +224,70 @@ class TwilioWhatsAppHandler:
             logger.error(f"Error generating AI response: {str(e)}")
             return "I'm here to help with voice transcription. How can I assist you today?"
 
-    async def generate_response(self, message: str, context: str) -> str:
+    async def send_transcription(self, to_number: str, transcription: str, db: Session):
+        try:
+            if len(transcription) <= 1500:
+                message = self.twilio_client.messages.create(
+                    body=f"🎙️✨ ```YOUR TRANSCRIPT FROM ADA:```\n\n{transcription}\n--------------\n```GOT THIS FROM SOMEONE? TRY ADA! https://bit.ly/Free_Ada\u200B```",
+                    from_='whatsapp:+12254200006',
+                    to=f'whatsapp:{to_number}'
+                )
+                logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
+            else:
+                # Generate a unique hash for the message
+                message_hash = uuid.uuid4().hex
+                logger.info(f"Generated hash for message: {message_hash}")
+
+                # Store the message with the hash in the database
+                db_message = Message(phone_number=to_number, text=transcription, embedding=[], hash=message_hash)
+                db.add(db_message)
+                db.commit()
+
+                # Send initial message about length with link
+                initial_message = self.twilio_client.messages.create(
+                    body=(
+                        "📝 Wow, that's quite a message! It's so long it exceeds WhatsApp's limit.\n "
+                        "✨ No worries though - I'll craft a concise summary for you in just a moment.\n "
+                        f"🔗 View the full transcription here: {BASE_URL}/transcript/{message_hash}"
+                    ),
+                    from_='whatsapp:+12254200006',
+                    to=f'whatsapp:{to_number}'
+                )
+                logger.info(f"Initial message sent to {to_number}. Message SID: {initial_message.sid}")
+
+                # Generate summary using GPT-4
+                summary = await self.generate_summary(transcription)
+
+                # Send summary
+                summary_message = self.twilio_client.messages.create(
+                    body=f"```[SUMMARIZED WITH ADA 🧚‍♂️]```\n\n{summary}\n\n--------------\n ```GOT THIS FROM SOMEONE? TRY ADA! https://bit.ly/Free_Ada\u200B```",
+                    from_='whatsapp:+12254200006',
+                    to=f'whatsapp:{to_number}'
+                )
+                logger.info(f"Summary sent to {to_number}. Message SID: {summary_message.sid}")
+
+        except Exception as e:
+            logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
+
+    async def generate_summary(self, transcription: str) -> str:
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
-                    Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
-                    Keep responses under 50 words. Be responsive to the user's message, but always relate back to the transcription service.
-                    Do not offer free trials to users who have used all their free trials and are not subscribed. Instead, focus on the benefits of subscribing.
-                    For users with free trials, encourage them to use the service.
-                    For subscribed users, remind them of the benefits and encourage use.
-                    . """},
-                    {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
-                ]
+               messages=[
+                {"role": "system", "content": """You are Ada, a best in class AI assistant that summarizes voice message transcriptions. 
+                Your task is to create summaries as close to 1500 characters as possible, without exceeding this limit. 
+                Maintain the original tone and language variant of the message, including any regional Spanish differences 
+                (e.g., Spain Spanish vs. Latin American Spanish)."""},
+                {"role": "user", "content": f"""Please summarize the following transcription. Aim for a summary length 
+                as close to 1500 characters as possible, but do not exceed this limit. Maintain the original tone and 
+                language variant, including any regional Spanish differences:\n\n{transcription}"""}
+            ],
+                max_tokens=600  # Adjust as needed to ensure the summary stays under 1500 characters
             )
-            return response.choices[0].message.content
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"Error generating AI response: {str(e)}")
-            return "I'm here to help with voice transcription. How can I assist you today?"
-
-    async def send_transcription(self, to_number: str, transcription: str):
-        try:
-            message = self.twilio_client.messages.create(
-                body=f"🌟 Your transcript from *Ada*:\n_{transcription}_\n--------------\n🧚‍♂️ Someone fwd this to you? *Try Ada:* https://bit.ly/Free_Ada\u200B",
-                from_='whatsapp:+12254200006',
-                to=f'whatsapp:{to_number}'
-            )
-            logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
+            logger.error(f"Error generating summary: {str(e)}")
+            return "I apologize, but I encountered an error while summarizing your message. Please try again later."
 
     async def transcribe_voice_message(self, voice_message_url: str) -> str:
         try:
@@ -316,12 +325,21 @@ class TwilioWhatsAppHandler:
         response += "\n\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
         await self.send_ai_response(to_number, response)
 
+    async def send_welcome_with_transcription_info(self, to_number: str):
+        message = (
+            "👋 Welcome to Ada! I see you've already sent a voice message. Great start! "
+            "I'm transcribing it now and will send you the result in a moment. "
+            "You have 2 more free transcriptions to try out. Enjoy the service!"
+        )
+        await self.send_ai_response(to_number, message)
+
     async def send_welcome_message(self, to_number: str):
-        context = "New user with 3 free trials. Encourage them to try the service immediately."
-        message = "Welcome to Ada!"
-        response = await self.generate_response(message, context)
-        response += "\n\nYou have 3 free transcriptions to try our service. Why not start now? Send me a voice message, and I'll transcribe it for you!"
-        await self.send_ai_response(to_number, response)
+        message = (
+            "🎉 Hi! I'm Ada, your voice-to-text fairy! ✨🧚‍♀️\n\n"
+            "You've got 3 free transcription spells. Ready to try?\n\n"
+            "🎙️ Send a voice message and watch the magic happen! 🚀"
+        )
+        await self.send_ai_response(to_number, message)
 
     async def send_subscription_confirmation(self, to_number: str):
         try:
@@ -406,15 +424,11 @@ class TwilioWhatsAppHandler:
         except Exception as e:
             logger.error(f"Failed to send AI response to {to_number}: {str(e)}")
 
-# Initialize Google Docs Updater with the Document ID
-#google_docs_updater = GoogleDocsUpdater('1LRPBsPdYkgQawy5LxCClyeIrZ-F8T_iJqq2FCQSXNVI')
-
 # Create an instance of TwilioWhatsAppHandler
 twilio_whatsapp_handler = TwilioWhatsAppHandler(
     account_sid=os.getenv('TWILIO_ACCOUNT_SID'),
     auth_token=os.getenv('TWILIO_AUTH_TOKEN'),
     openai_api_key=os.getenv('OPENAI_API_KEY'),
-#    google_docs_updater=google_docs_updater
 )
 
 @app.post("/whatsapp", response_model=None)
@@ -440,8 +454,8 @@ async def create_checkout_session():
             payment_method_types=['card'],
             line_items=[{'price': 'price_1Q4lwXHFdJwdS5kkM8sAAKOJ', 'quantity': 1}],
             mode='subscription',
-            success_url='https://journai.onrender.com/success',
-            cancel_url='https://journai.onrender.com/cancel',
+            success_url=f'{BASE_URL}/success',
+            cancel_url=f'{BASE_URL}/cancel',
             phone_number_collection={'enabled': True},
         )
         return RedirectResponse(url=checkout_session.url, status_code=303)
@@ -529,6 +543,65 @@ async def success(request: Request):
 @app.get("/cancel")
 async def cancel(request: Request):
     return templates.TemplateResponse("cancel.html", {"request": request})
+
+
+@app.get("/transcript/{message_hash}", response_model=None)
+async def get_transcription_by_hash(message_hash: str, request: Request, db: Session = Depends(get_db)):
+    logger.info(f"Attempting to retrieve message with hash: {message_hash}")
+
+    # Get the User-Agent header
+    user_agent = request.headers.get('User-Agent', '')
+    logger.info(f"User-Agent: {user_agent}")
+
+    # Define a list of known pre-fetcher User-Agents
+    prefetch_user_agents = [
+        'WhatsApp',
+        'facebookexternalhit',
+        'Facebot',
+        # Add other known pre-fetcher identifiers if necessary
+    ]
+
+    # Check if the User-Agent belongs to a pre-fetcher
+    if any(agent in user_agent for agent in prefetch_user_agents):
+        logger.info("Detected pre-fetch request. Serving minimal response.")
+        # Serve a minimal response without deleting the hash
+        return Response(status_code=200)
+
+    # Proceed with normal logic for actual user requests
+    try:
+        # Query the database for the message with the given hash
+        db_message = db.query(Message).filter(Message.hash == message_hash).first()
+
+        if not db_message:
+            logger.error(f"Transcription not found for hash: {message_hash}")
+            return templates.TemplateResponse("transcript.html", {
+                "request": request,
+                "transcription": None,
+                "error_message": "🚨 Error: Transcription not found or already viewed"
+            })
+
+        logger.info(f"Found message. First 100 characters: {db_message.text[:100]}...")
+
+        # Return the transcription
+        response = templates.TemplateResponse("transcript.html", {
+            "request": request,
+            "transcription": db_message.text,
+            "error_message": None
+        })
+
+        # Delete the hash to prevent future access
+        db_message.hash = None
+        db.commit()
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error retrieving transcription: {str(e)}")
+        return templates.TemplateResponse("transcript.html", {
+            "request": request,
+            "transcription": None,
+            "error_message": "An error occurred while retrieving the transcription"
+        })
 
 # Retrieve database info
 print(f"CONNECTED TO DATABASE: {DATABASE_URL}")

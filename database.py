@@ -24,6 +24,7 @@ class Message(Base):
     text = Column(String)
     embedding = Column(ARRAY(Float))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    hash = Column(String, unique=True, index=True)
 
 class WhitelistedNumber(Base):
     __tablename__ = "whitelisted_numbers"

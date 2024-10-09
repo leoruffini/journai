@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ada's Transcription | JournAI</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f0f4f8;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            max-width: 800px;
+            width: 90%;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        .note {
+            background-color: #e7f5ea;
+            border-left: 4px solid #28a745;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+        }
+        .content {
+            background-color: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin-top: 1.5rem;
+        }
+        .error-message {
+            color: #721c24;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .info-message  {
+            background-color: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin-top: 1.5rem;
+        }
+        p {
+            margin: 0.5rem 0;
+        }
+        @media (max-width: 600px) {
+            .container {
+                padding: 1.5rem;
+                width: 95%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ada's Transcription</h1>
+        {% if error_message %}
+            <div class="error-message">
+                <p><strong>🚨 Error:</strong> {{ error_message }}</p>
+                <p>🕵️‍♀️ For privacy reasons, each transcription link can only be viewed once.</p>
+                <p>🧚 If you need to access this transcription again, just resend the voice message to Ada.</p>
+            </div>
+        {% else %}
+            <div class="note">
+                <p><strong>🔐 One-Time View:</strong> This transcription is available for a single viewing only.</p>
+                <p>🕵️‍♀️ For your privacy: Once viewed, the link becomes inactive to protect your data.</p>
+                <p>🔄 Need it again? Simply send the voice message to Ada again a for a fresh transcription.</p>
+                <p>📱 Pro tip: Consider copying important information before closing this page!</p>
+            </div>
+            <div class="content">
+                {{ transcription }}
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
