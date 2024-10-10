@@ -1,15 +1,23 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ARRAY, Float
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ARRAY, Float, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
 import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from cryptography.fernet import Fernet
+
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL is None:
     raise ValueError("DATABASE_URL environment variable is not set")
+
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+if ENCRYPTION_KEY is None:
+    raise ValueError("ENCRYPTION_KEY environment variable is not set")
+
+fernet = Fernet(ENCRYPTION_KEY)
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -21,10 +29,18 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     phone_number = Column(String, index=True)
-    text = Column(String)
+    encrypted_text = Column(LargeBinary)  # Changed from text to encrypted_text
     embedding = Column(ARRAY(Float))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     hash = Column(String, unique=True, index=True)
+
+    @property
+    def text(self):
+        return fernet.decrypt(self.encrypted_text).decode()
+
+    @text.setter
+    def text(self, value):
+        self.encrypted_text = fernet.encrypt(value.encode())
 
 class WhitelistedNumber(Base):
     __tablename__ = "whitelisted_numbers"

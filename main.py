@@ -20,6 +20,8 @@ from datetime import datetime, timezone, timedelta
 import uuid
 from sqlalchemy import text
 from fastapi.responses import Response
+from cryptography.fernet import Fernet
+from database import fernet
 
 
 load_dotenv()
@@ -158,7 +160,8 @@ class TwilioWhatsAppHandler:
 
                     embedding = self.generate_embedding(self.transcription)
 
-                    db_message = Message(phone_number=phone_number, text=self.transcription, embedding=embedding)
+                    db_message = Message(phone_number=phone_number, embedding=embedding)
+                    db_message.text = self.transcription  # This will use the setter to encrypt
                     db.add(db_message)
                     db.commit()
 
@@ -226,7 +229,9 @@ class TwilioWhatsAppHandler:
                 self.logger.info(f"Generated hash for message: {message_hash}")
 
                 # Store the message with the hash in the database
-                db_message = Message(phone_number=to_number, text=transcription, embedding=[], hash=message_hash)
+                db_message = Message(phone_number=to_number, embedding=[])
+                db_message.text = transcription  # This will use the setter to encrypt
+                db_message.hash = message_hash
                 db.add(db_message)
                 db.commit()
 
@@ -602,7 +607,7 @@ async def get_transcription_by_hash(message_hash: str, request: Request, db: Ses
         # Return the transcription
         response = templates.TemplateResponse("transcript.html", {
             "request": request,
-            "transcription": db_message.text,
+            "transcription": db_message.text,  # This will use the getter to decrypt
             "error_message": None
         })
 
