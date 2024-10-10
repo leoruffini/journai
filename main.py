@@ -24,11 +24,15 @@ from fastapi.responses import Response
 
 load_dotenv()
 
-app = FastAPI()
-
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(
+    level=getattr(logging, log_level),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+app = FastAPI()
 
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
@@ -46,6 +50,7 @@ class TwilioWhatsAppHandler:
         self.transcription = None
         openai.api_key = self.openai_api_key
         self.openai_client = OpenAI(api_key=openai_api_key)
+        self.logger = logging.getLogger(f"{__name__}.TwilioWhatsAppHandler")
 
     def generate_embedding(self, text: str) -> list[float]:
         response = self.openai_client.embeddings.create(input=text, model="text-embedding-ada-002")
@@ -64,7 +69,7 @@ class TwilioWhatsAppHandler:
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.error(f"Error generating AI response: {str(e)}")
+            self.logger.error(f"Error generating AI response: {str(e)}")
             return "Send a voice message for transcription or subscribe to continue using the service."
 
     async def send_processing_confirmation(self, to_number: str):
@@ -74,28 +79,23 @@ class TwilioWhatsAppHandler:
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
 
     async def handle_whatsapp_request(self, request: Request, db: Session = Depends(get_db)):
+        self.logger.debug("Received WhatsApp request")
         try:
-            logger.info("Received WhatsApp request")
-            try:
-                form_data = await request.form()
-            except Exception as e:
-                logger.error(f"Error parsing form data: {str(e)}")
-                raise HTTPException(status_code=400, detail="Error parsing form data")
-
+            form_data = await request.form()
             url = str(request.url)
             signature = request.headers.get('X-Twilio-Signature', '')
 
-            logger.info(f"Form data: {form_data}")
-            logger.info(f"Request URL: {url}")
-            logger.info(f"Signature: {signature}")
+            self.logger.debug(f"Form data: {form_data}")
+            self.logger.debug(f"Request URL: {url}")
+            self.logger.debug(f"Signature: {signature}")
 
             if not self.validator.validate(url, form_data, signature):
-                logger.error("Invalid request signature")
+                self.logger.warning("Invalid request signature")
                 return JSONResponse(content={"message": "Invalid request"}, status_code=400)
 
             phone_number = form_data.get('From', '').replace('whatsapp:', '')
@@ -116,7 +116,7 @@ class TwilioWhatsAppHandler:
                 if not is_voice_message:
                     return JSONResponse(content={"message": "Welcome message sent"}, status_code=200)
 
-            logger.info(f"User found: {user.phone_number}, Free trials remaining: {user.free_trial_remaining}")
+            self.logger.info(f"User found: {user.phone_number}, Free trials remaining: {user.free_trial_remaining}")
 
             media_type = form_data.get('MediaContentType0')
             is_voice_message = media_type == 'audio/ogg'
@@ -146,15 +146,15 @@ class TwilioWhatsAppHandler:
                     await self.send_processing_confirmation(phone_number)
 
                     voice_message_url = form_data.get('MediaUrl0')
-                    logger.info(f"Media type: {media_type}")
-                    logger.info(f"Voice message URL: {voice_message_url}")
+                    self.logger.info(f"Media type: {media_type}")
+                    self.logger.info(f"Voice message URL: {voice_message_url}")
 
                     if not voice_message_url:
-                        logger.error("No media found")
+                        self.logger.error("No media found")
                         return JSONResponse(content={"message": "No media found"}, status_code=400)
 
                     self.transcription = await self.transcribe_voice_message(voice_message_url)
-                    logger.info(f"Transcription: {self.transcription}")
+                    self.logger.info(f"Transcription: {self.transcription}")
 
                     embedding = self.generate_embedding(self.transcription)
 
@@ -168,7 +168,7 @@ class TwilioWhatsAppHandler:
                     if user.free_trial_remaining > 0:
                         user.free_trial_remaining -= 1
                         db.commit()
-                        logger.info(f"User {phone_number} has {user.free_trial_remaining} free trials remaining")
+                        self.logger.info(f"User {phone_number} has {user.free_trial_remaining} free trials remaining")
 
                         # If this was the last free trial, send the last free trial message
                         if user.free_trial_remaining == 0:
@@ -179,15 +179,15 @@ class TwilioWhatsAppHandler:
                     await self.send_unsupported_media_message(phone_number, media_type)
                     return JSONResponse(content={"message": f"Unsupported media type: {media_type}"}, status_code=400)
             else:
-                logger.info(f"User {phone_number} has no free trials remaining and is not whitelisted")
+                self.logger.info(f"User {phone_number} has no free trials remaining and is not whitelisted")
                 await self.send_subscription_reminder(phone_number)
                 return JSONResponse(content={"message": "User not subscribed"}, status_code=403)
 
         except HTTPException as he:
-            logger.error(f"HTTP Exception: {str(he)}")
+            self.logger.error(f"HTTP Exception: {str(he)}")
             return JSONResponse(content={"message": str(he)}, status_code=he.status_code)
         except Exception as e:
-            logger.exception("Error handling WhatsApp request")
+            self.logger.exception("Error handling WhatsApp request")
             db.rollback()
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
 
@@ -208,7 +208,7 @@ class TwilioWhatsAppHandler:
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.error(f"Error generating AI response: {str(e)}")
+            self.logger.error(f"Error generating AI response: {str(e)}")
             return "I'm here to help with voice transcription. How can I assist you today?"
 
     async def send_transcription(self, to_number: str, transcription: str, db: Session):
@@ -219,11 +219,11 @@ class TwilioWhatsAppHandler:
                     from_='whatsapp:+12254200006',
                     to=f'whatsapp:{to_number}'
                 )
-                logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
+                self.logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
             else:
                 # Generate a unique hash for the message
                 message_hash = uuid.uuid4().hex
-                logger.info(f"Generated hash for message: {message_hash}")
+                self.logger.info(f"Generated hash for message: {message_hash}")
 
                 # Store the message with the hash in the database
                 db_message = Message(phone_number=to_number, text=transcription, embedding=[], hash=message_hash)
@@ -240,7 +240,7 @@ class TwilioWhatsAppHandler:
                     from_='whatsapp:+12254200006',
                     to=f'whatsapp:{to_number}'
                 )
-                logger.info(f"Initial message sent to {to_number}. Message SID: {initial_message.sid}")
+                self.logger.info(f"Initial message sent to {to_number}. Message SID: {initial_message.sid}")
 
                 # Generate summary using GPT-4
                 summary = await self.generate_summary(transcription)
@@ -251,10 +251,10 @@ class TwilioWhatsAppHandler:
                     from_='whatsapp:+12254200006',
                     to=f'whatsapp:{to_number}'
                 )
-                logger.info(f"Summary sent to {to_number}. Message SID: {summary_message.sid}")
+                self.logger.info(f"Summary sent to {to_number}. Message SID: {summary_message.sid}")
 
         except Exception as e:
-            logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
 
     async def generate_summary(self, transcription: str) -> str:
         try:
@@ -268,32 +268,33 @@ class TwilioWhatsAppHandler:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"Error generating summary: {str(e)}")
+            self.logger.error(f"Error generating summary: {str(e)}")
             return "I apologize, but I encountered an error while summarizing your message. Please try again later."
 
     async def transcribe_voice_message(self, voice_message_url: str) -> str:
         try:
-            logger.info(f"Downloading voice message from URL: {voice_message_url}")
+            self.logger.info("Transcribing voice message")
+            self.logger.info(f"Downloading voice message from URL: {voice_message_url}")
             response = requests.get(voice_message_url, auth=(self.account_sid, self.auth_token))
             response.raise_for_status()
             audio_data = response.content
-            logger.info("Voice message downloaded successfully")
+            self.logger.info("Voice message downloaded successfully")
 
             from openai import OpenAI
             client = OpenAI(api_key=self.openai_api_key)
-            logger.info("Transcribing voice message using OpenAI")
+            self.logger.info("Transcribing voice message using OpenAI")
 
             audio_file = io.BytesIO(audio_data)
             audio_file.name = "voice_message.ogg"
 
             transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file)
-            logger.info("Transcription successful")
+            self.logger.info("Transcription successful")
 
             # Post-process the transcription using GPT-4o
             post_processed_transcript = await self.post_process_transcription(transcript.text)
             return post_processed_transcript
         except Exception as e:
-            logger.exception("Error transcribing voice message")
+            self.logger.exception("Error transcribing voice message")
             return f"Error transcribing voice message: {str(e)}"
 
     async def post_process_transcription(self, transcription: str) -> str:
@@ -324,7 +325,7 @@ Provide the corrected transcription only:\n\n{transcription}"""}
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"Error post-processing transcription: {str(e)}")
+            self.logger.error(f"Error post-processing transcription: {str(e)}")
             return transcription  # Return the original transcription if post-processing fails
 
     def is_whitelisted(self, db: Session, phone_number: str) -> bool:
@@ -364,9 +365,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
 
     async def send_subscription_cancelled_message(self, to_number: str):
         try:
@@ -375,9 +376,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Subscription cancelled message sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Subscription cancelled message sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send subscription cancelled message to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send subscription cancelled message to {to_number}: {str(e)}")
 
     async def send_last_free_trial_message(self, to_number: str):
         context = "User has just used their last free trial."
@@ -402,9 +403,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Unsupported media message sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Unsupported media message sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send unsupported media message to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send unsupported media message to {to_number}: {str(e)}")
 
     async def send_text_message_with_free_trials(self, to_number: str, free_trial_remaining: int):
         try:
@@ -414,9 +415,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Text message with free trials sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Text message with free trials sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send text message with free trials to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send text message with free trials to {to_number}: {str(e)}")
 
     async def send_subscribed_user_text_message(self, to_number: str):
         try:
@@ -425,9 +426,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Subscribed user text message sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"Subscribed user text message sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send subscribed user text message to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send subscribed user text message to {to_number}: {str(e)}")
 
     async def send_ai_response(self, to_number: str, response: str):
         try:
@@ -436,9 +437,9 @@ Provide the corrected transcription only:\n\n{transcription}"""}
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"AI response sent to {to_number}. Message SID: {message.sid}")
+            self.logger.info(f"AI response sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send AI response to {to_number}: {str(e)}")
+            self.logger.error(f"Failed to send AI response to {to_number}: {str(e)}")
 
 # Create an instance of TwilioWhatsAppHandler
 twilio_whatsapp_handler = TwilioWhatsAppHandler(
@@ -449,7 +450,7 @@ twilio_whatsapp_handler = TwilioWhatsAppHandler(
 
 @app.post("/whatsapp", response_model=None)
 async def whatsapp(request: Request, db: Session = Depends(get_db)):
-    logger.info("Received request to /whatsapp endpoint")
+    logger.debug("Received request to /whatsapp endpoint")
     return await twilio_whatsapp_handler.handle_whatsapp_request(request, db)
 
 @app.get("/transcription", response_model=None)
