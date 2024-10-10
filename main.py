@@ -282,7 +282,7 @@ class TwilioWhatsAppHandler:
                 as close to 1500 characters as possible, but do not exceed this limit. Maintain the original tone and 
                 language variant, including any regional Spanish differences:\n\n{transcription}"""}
             ],
-                max_tokens=600  # Adjust as needed to ensure the summary stays under 1500 characters
+                max_tokens=280  # Adjust as needed to ensure the summary stays under 1500 characters
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
