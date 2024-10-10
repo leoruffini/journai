@@ -160,13 +160,8 @@ class TwilioWhatsAppHandler:
 
                     embedding = self.generate_embedding(self.transcription)
 
-                    db_message = Message(phone_number=phone_number, embedding=embedding)
-                    db_message.text = self.transcription  # This will use the setter to encrypt
-                    db.add(db_message)
-                    db.commit()
-
-                    # Pass the db session to send_transcription
-                    await self.send_transcription(phone_number, self.transcription, db)
+                    # Pass the embedding to send_transcription
+                    await self.send_transcription(phone_number, self.transcription, embedding, db)
 
                     if user.free_trial_remaining > 0:
                         user.free_trial_remaining -= 1
@@ -214,9 +209,14 @@ class TwilioWhatsAppHandler:
             self.logger.error(f"Error generating AI response: {str(e)}")
             return "I'm here to help with voice transcription. How can I assist you today?"
 
-    async def send_transcription(self, to_number: str, transcription: str, db: Session):
+    async def send_transcription(self, to_number: str, transcription: str, embedding: list[float], db: Session):
         try:
+            # Create the Message object once
+            db_message = Message(phone_number=to_number, embedding=embedding)
+            db_message.text = transcription  # This will use the setter to encrypt
+
             if len(transcription) <= 1500:
+                # Send the transcription directly via WhatsApp
                 message = self.twilio_client.messages.create(
                     body=f"🎙️✨ ```YOUR TRANSCRIPT FROM ADA:```\n\n{transcription}\n--------------\n```GOT THIS FROM SOMEONE? TRY ADA! https://bit.ly/Free_Ada\u200B```",
                     from_='whatsapp:+12254200006',
@@ -224,22 +224,18 @@ class TwilioWhatsAppHandler:
                 )
                 self.logger.info(f"Transcription sent to {to_number}. Message SID: {message.sid}")
             else:
-                # Generate a unique hash for the message
+                # Transcription is too long; generate a hash and provide a link
                 message_hash = uuid.uuid4().hex
                 self.logger.info(f"Generated hash for message: {message_hash}")
 
-                # Store the message with the hash in the database
-                db_message = Message(phone_number=to_number, embedding=[])
-                db_message.text = transcription  # This will use the setter to encrypt
+                # Set the hash in db_message
                 db_message.hash = message_hash
-                db.add(db_message)
-                db.commit()
 
-                # Send initial message about length with link
+                # Send initial message about the long transcription with a link
                 initial_message = self.twilio_client.messages.create(
                     body=(
-                        "📝 Wow, that's quite a message! It's so long it exceeds WhatsApp's limit.\n "
-                        "✨ No worries though - I'll craft a concise summary for you in just a moment.\n "
+                        "📝 Wow, that's quite a message! It's so long it exceeds WhatsApp's limit.\n"
+                        "✨ No worries though - I'll craft a concise summary for you in just a moment.\n"
                         f"🔗 View the full transcription here: {BASE_URL}/transcript/{message_hash}"
                     ),
                     from_='whatsapp:+12254200006',
@@ -247,16 +243,23 @@ class TwilioWhatsAppHandler:
                 )
                 self.logger.info(f"Initial message sent to {to_number}. Message SID: {initial_message.sid}")
 
-                # Generate summary using GPT-4
+                # Generate a summary using GPT-4
                 summary = await self.generate_summary(transcription)
 
-                # Send summary
+                # Send the summary to the user
                 summary_message = self.twilio_client.messages.create(
-                    body=f"```[SUMMARIZED WITH ADA 🧚‍♂️]```\n\n{summary}\n\n--------------\n ```GOT THIS FROM SOMEONE? TRY ADA! https://bit.ly/Free_Ada\u200B```",
+                    body=(
+                        f"```[SUMMARIZED WITH ADA 🧚‍♂️]```\n\n{summary}\n\n--------------\n"
+                        f"```GOT THIS FROM SOMEONE? TRY ADA! https://bit.ly/Free_Ada\u200B```"
+                    ),
                     from_='whatsapp:+12254200006',
                     to=f'whatsapp:{to_number}'
                 )
                 self.logger.info(f"Summary sent to {to_number}. Message SID: {summary_message.sid}")
+
+            # Save the db_message to the database only once
+            db.add(db_message)
+            db.commit()
 
         except Exception as e:
             self.logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
