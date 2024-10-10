@@ -67,6 +67,17 @@ class TwilioWhatsAppHandler:
             logger.error(f"Error generating AI response: {str(e)}")
             return "Send a voice message for transcription or subscribe to continue using the service."
 
+    async def send_processing_confirmation(self, to_number: str):
+        try:
+            message = self.twilio_client.messages.create(
+                body="🎙️ Voice message received! I'm processing it now. Your transcription will be ready in a moment. ⏳✨",
+                from_='whatsapp:+12254200006',
+                to=f'whatsapp:{to_number}'
+            )
+            logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
+        except Exception as e:
+            logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
+
     async def handle_whatsapp_request(self, request: Request, db: Session = Depends(get_db)):
         try:
             logger.info("Received WhatsApp request")
@@ -108,6 +119,8 @@ class TwilioWhatsAppHandler:
             logger.info(f"User found: {user.phone_number}, Free trials remaining: {user.free_trial_remaining}")
 
             media_type = form_data.get('MediaContentType0')
+            is_voice_message = media_type == 'audio/ogg'
+
             if not media_type:
                 # Handle text message
                 user_message = form_data.get('Body', '')
@@ -127,49 +140,11 @@ class TwilioWhatsAppHandler:
                 await self.send_ai_response(phone_number, ai_response)
                 return JSONResponse(content={"message": "Text message handled"}, status_code=200)
 
-            if user.free_trial_remaining > 0:
-                user.free_trial_remaining -= 1
-                db.commit()
-                logger.info(f"User {phone_number} has {user.free_trial_remaining} free trials remaining")
-                
-                # Process the voice message as usual
-                voice_message_url = form_data.get('MediaUrl0')
-                logger.info(f"Media type: {media_type}")
-                logger.info(f"Voice message URL: {voice_message_url}")
+            if user.free_trial_remaining > 0 or self.is_whitelisted(db, phone_number):
+                if is_voice_message:
+                    # Send processing confirmation
+                    await self.send_processing_confirmation(phone_number)
 
-                if not voice_message_url:
-                    logger.error("No media found")
-                    return JSONResponse(content={"message": "No media found"}, status_code=400)
-
-                if media_type != 'audio/ogg':
-                    await self.send_unsupported_media_message(phone_number, media_type)
-                    return JSONResponse(content={"message": f"Unsupported media type: {media_type}"}, status_code=400)
-
-                self.transcription = await self.transcribe_voice_message(voice_message_url)
-                logger.info(f"Transcription: {self.transcription}")
-
-                embedding = self.generate_embedding(self.transcription)
-
-                db_message = Message(phone_number=phone_number, text=self.transcription, embedding=embedding)
-                db.add(db_message)
-                db.commit()
-
-                # Pass the db session to send_transcription
-                await self.send_transcription(phone_number, self.transcription, db)
-
-                # If this was the last free trial, send the last free trial message
-                if user.free_trial_remaining == 0:
-                    await self.send_last_free_trial_message(phone_number)
-
-                return JSONResponse(content={"message": "Voice message processed successfully", "transcription": self.transcription}, status_code=200)
-            else:
-                logger.info(f"User {phone_number} has no free trials remaining")
-                if not self.is_whitelisted(db, phone_number):
-                    await self.send_subscription_reminder(phone_number)
-                    return JSONResponse(content={"message": "User not subscribed"}, status_code=403)
-                else:
-                    logger.info(f"User {phone_number} is whitelisted")
-                    # Process the voice message as usual for subscribed users
                     voice_message_url = form_data.get('MediaUrl0')
                     logger.info(f"Media type: {media_type}")
                     logger.info(f"Voice message URL: {voice_message_url}")
@@ -177,10 +152,6 @@ class TwilioWhatsAppHandler:
                     if not voice_message_url:
                         logger.error("No media found")
                         return JSONResponse(content={"message": "No media found"}, status_code=400)
-
-                    if media_type != 'audio/ogg':
-                        await self.send_unsupported_media_message(phone_number, media_type)
-                        return JSONResponse(content={"message": f"Unsupported media type: {media_type}"}, status_code=400)
 
                     self.transcription = await self.transcribe_voice_message(voice_message_url)
                     logger.info(f"Transcription: {self.transcription}")
@@ -194,7 +165,23 @@ class TwilioWhatsAppHandler:
                     # Pass the db session to send_transcription
                     await self.send_transcription(phone_number, self.transcription, db)
 
+                    if user.free_trial_remaining > 0:
+                        user.free_trial_remaining -= 1
+                        db.commit()
+                        logger.info(f"User {phone_number} has {user.free_trial_remaining} free trials remaining")
+
+                        # If this was the last free trial, send the last free trial message
+                        if user.free_trial_remaining == 0:
+                            await self.send_last_free_trial_message(phone_number)
+
                     return JSONResponse(content={"message": "Voice message processed successfully", "transcription": self.transcription}, status_code=200)
+                else:
+                    await self.send_unsupported_media_message(phone_number, media_type)
+                    return JSONResponse(content={"message": f"Unsupported media type: {media_type}"}, status_code=400)
+            else:
+                logger.info(f"User {phone_number} has no free trials remaining and is not whitelisted")
+                await self.send_subscription_reminder(phone_number)
+                return JSONResponse(content={"message": "User not subscribed"}, status_code=403)
 
         except HTTPException as he:
             logger.error(f"HTTP Exception: {str(he)}")
@@ -274,15 +261,10 @@ class TwilioWhatsAppHandler:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                messages=[
-                {"role": "system", "content": """You are Ada, a best in class AI assistant that summarizes voice message transcriptions. 
-                Your task is to create summaries as close to 1500 characters as possible, without exceeding this limit. 
-                Maintain the original tone and language variant of the message, including any regional Spanish differences 
-                (e.g., Spain Spanish vs. Latin American Spanish)."""},
-                {"role": "user", "content": f"""Please summarize the following transcription. Aim for a summary length 
-                as close to 1500 characters as possible, but do not exceed this limit. Maintain the original tone and 
-                language variant, including any regional Spanish differences:\n\n{transcription}"""}
-            ],
-                max_tokens=280  # Adjust as needed to ensure the summary stays under 1500 characters
+                {"role": "system", "content": """You are Ada, a top-tier AI assistant specializing in summarizing voice message transcriptions. Your summaries must **absolutely not exceed 1500 characters**. Before finalizing the summary, **internally count the characters** to ensure compliance. It's essential to **preserve the original tone, conversational style, and personal touches of the speaker**, including any colloquial expressions, rhetorical questions, and informal language. Maintain the original language variant and regional differences (e.g., Spain Spanish vs. Latin American Spanish). Do not mention the character count in your final summary."""},
+                {"role": "user", "content": f"""Please summarize the following transcription. Ensure the summary is concise and complete, capturing the key points succinctly. It is crucial that the summary **does not exceed 1500 characters**. **Internally verify the character count** before providing the final summary. Focus on key points while **maintaining the speaker's tone, conversational style, and personal expressions**. Preserve any colloquial phrases, rhetorical questions, and regional language variants, including any regional Spanish differences:\n\n{transcription}"""}
+                ],
+                max_tokens=300  # Adjust as needed to ensure the summary stays under 1500 characters
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -306,10 +288,44 @@ class TwilioWhatsAppHandler:
 
             transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file)
             logger.info("Transcription successful")
-            return transcript.text
+
+            # Post-process the transcription using GPT-4o
+            post_processed_transcript = await self.post_process_transcription(transcript.text)
+            return post_processed_transcript
         except Exception as e:
             logger.exception("Error transcribing voice message")
             return f"Error transcribing voice message: {str(e)}"
+
+    async def post_process_transcription(self, transcription: str) -> str:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": """You are an expert multilingual transcription assistant. Your task is to **post-process transcriptions of voice messages** in different languages, including but not limited to Spanish, Catalan, and English, to enhance their readability and accuracy **before they are summarized**. Specifically, you should:
+
+1. **Detect the language of the transcription** (most probably Spanish, Catalan, or English) and apply language-specific rules for spelling, grammar, and punctuation. Correct any errors while preserving regional language variants (e.g., Spain Spanish vs. Latin American Spanish, Catalan, or English dialects).
+2. **Add appropriate punctuation and capitalization** to clarify meaning and improve readability, without altering the speaker's intended message.
+3. **Preserve the original tone, style, and personal expressions** of the speaker, including colloquial phrases and regionalisms, based on the detected language.
+4. **Do not add, remove, or alter any content beyond what is necessary for correction**. Keep the text as close to the original meaning as possible.
+
+Provide the corrected transcription only, without any additional comments or explanations."""},
+                    {"role": "user", "content": f"""Please post-process the following transcription of a voice message. The transcription may be in Spanish, Catalan, or English. 
+
+**Instructions:**
+
+- Detect the language and apply language-specific corrections for spelling, grammar, and punctuation.
+- Correct any errors and add necessary punctuation and capitalization.
+- Preserve the speaker's tone, style, and regional language variants.
+- Do not change the original meaning or omit any parts of the text.
+
+Provide the corrected transcription only:\n\n{transcription}"""}
+                ],
+                max_tokens=1500  # Adjust as needed
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Error post-processing transcription: {str(e)}")
+            return transcription  # Return the original transcription if post-processing fails
 
     def is_whitelisted(self, db: Session, phone_number: str) -> bool:
         whitelisted = db.query(WhitelistedNumber).filter(
@@ -341,16 +357,16 @@ class TwilioWhatsAppHandler:
         )
         await self.send_ai_response(to_number, message)
 
-    async def send_subscription_confirmation(self, to_number: str):
+    async def send_processing_confirmation(self, to_number: str):
         try:
             message = self.twilio_client.messages.create(
-                body="*Welcome to Ada!* 🎉\nThank you for subscribing! You can now enjoy unlimited transcriptions. If you have any questions, feel free to reach out. 😊",
+                body="🎙️ Voice message received! I'm processing it now. Your transcription will be ready in a moment. ⏳✨",
                 from_='whatsapp:+12254200006',
                 to=f'whatsapp:{to_number}'
             )
-            logger.info(f"Subscription confirmation message sent to {to_number}. Message SID: {message.sid}")
+            logger.info(f"Processing confirmation sent to {to_number}. Message SID: {message.sid}")
         except Exception as e:
-            logger.error(f"Failed to send subscription confirmation message to {to_number}: {str(e)}")
+            logger.error(f"Failed to send processing confirmation to {to_number}: {str(e)}")
 
     async def send_subscription_cancelled_message(self, to_number: str):
         try:
