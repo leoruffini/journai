@@ -137,7 +137,7 @@ class TwilioWhatsAppHandler:
                 ai_response = await self.generate_response(user_message, context)
                 
                 if not self.is_whitelisted(db, phone_number) and user.free_trial_remaining == 0:
-                    ai_response += "\n\n🔗 Subscribe here: https://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+                    ai_response += "\n\n🔗 Subscribe here: https://buy.stripe.com/bIYeV7gZ34FC4FycMM"
                 
                 await self.send_ai_response(phone_number, ai_response)
                 return JSONResponse(content={"message": "Text message handled"}, status_code=200)
@@ -347,7 +347,7 @@ Provide the corrected transcription only:\n\n{transcription}"""}
         context = "User's free trial has expired and they need to subscribe."
         message = "Subscription needed"
         response = await self.generate_response(message, context)
-        response += "\n\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        response += "\n\nhttps://buy.stripe.com/bIYeV7gZ34FC4FycMM"
         await self.send_ai_response(to_number, response)
 
     async def send_welcome_with_transcription_info(self, to_number: str):
@@ -392,14 +392,14 @@ Provide the corrected transcription only:\n\n{transcription}"""}
         context = "User has just used their last free trial."
         message = "Last free trial used"
         response = await self.generate_response(message, context)
-        response += "\n\n🔗 Please subscribe now:\nhttps://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        response += "\n\n🔗 Please subscribe now:\nhttps://buy.stripe.com/bIYeV7gZ34FC4FycMM"
         await self.send_ai_response(to_number, response)
 
     async def send_subscription_reminder(self, to_number: str):
         context = "User needs to subscribe to continue using the service."
         message = "Subscription reminder"
         response = await self.generate_response(message, context)
-        response += "\n\n🔗 https://buy.stripe.com/test_4gwcMPcx03Et6uk3cc"
+        response += "\n\n🔗 https://buy.stripe.com/bIYeV7gZ34FC4FycMM"
         await self.send_ai_response(to_number, response)
 
     async def send_unsupported_media_message(self, to_number: str, media_type: str):
@@ -477,7 +477,7 @@ async def create_checkout_session():
     try:
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            line_items=[{'price': 'price_1Q4lwXHFdJwdS5kkM8sAAKOJ', 'quantity': 1}],
+            line_items=[{'price': os.getenv('STRIPE_PRICE_ID'), 'quantity': 1}],
             mode='subscription',
             success_url=f'{BASE_URL}/success',
             cancel_url=f'{BASE_URL}/cancel',
