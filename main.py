@@ -182,6 +182,68 @@ class StripeHandler:
         else:
             logger.error("No customer ID found in the subscription object")
 
+class VoiceMessageProcessor:
+    def __init__(self, openai_client: OpenAI, llm_handler: LLMHandler, logger: logging.Logger):
+        self.openai_client = openai_client
+        self.llm_handler = llm_handler
+        self.logger = logger
+
+    async def process_voice_message(self, voice_message_url: str, account_sid: str, auth_token: str) -> str:
+        try:
+            audio_data = await self.download_voice_message(voice_message_url, account_sid, auth_token)
+            raw_transcription = await self.transcribe_voice_message(audio_data)
+            post_processed_transcript = await self.post_process_transcription(raw_transcription)
+            return post_processed_transcript
+        except Exception as e:
+            self.logger.exception("Error processing voice message")
+            return f"Error processing voice message: {str(e)}"
+
+    async def download_voice_message(self, voice_message_url: str, account_sid: str, auth_token: str) -> bytes:
+        self.logger.info(f"Downloading voice message from URL: {voice_message_url}")
+        response = requests.get(voice_message_url, auth=(account_sid, auth_token))
+        response.raise_for_status()
+        self.logger.info("Voice message downloaded successfully")
+        return response.content
+
+    async def transcribe_voice_message(self, audio_data: bytes) -> str:
+        self.logger.info("Transcribing voice message using OpenAI")
+        audio_file = io.BytesIO(audio_data)
+        audio_file.name = "voice_message.ogg"
+        transcript = self.openai_client.audio.transcriptions.create(model=TRANSCRIPTION_MODEL, file=audio_file)
+        self.logger.info("Transcription successful")
+        return transcript.text
+
+    async def post_process_transcription(self, transcription: str) -> str:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": """You are an expert multilingual transcription assistant. Your task is to **post-process transcriptions of voice messages** in different languages, including but not limited to Spanish, Catalan, and English, to enhance their readability and accuracy **before they are summarized**. Specifically, you should:
+
+1. **Detect the language of the transcription** (most probably Spanish, Catalan, or English) and apply language-specific rules for spelling, grammar, and punctuation. Correct any errors while preserving regional language variants (e.g., Spain Spanish vs. Latin American Spanish, Catalan, or English dialects).
+2. **Add appropriate punctuation and capitalization** to clarify meaning and improve readability, without altering the speaker's intended message.
+3. **Preserve the original tone, style, and personal expressions** of the speaker, including colloquial phrases and regionalisms, based on the detected language.
+4. **Do not add, remove, or alter any content beyond what is necessary for correction**. Keep the text as close to the original meaning as possible.
+
+Provide the corrected transcription only, without any additional comments or explanations."""},
+                    {"role": "user", "content": f"""Please post-process the following transcription of a voice message. The transcription may be in Spanish, Catalan, or English. 
+
+**Instructions:**
+
+- Detect the language and apply language-specific corrections for spelling, grammar, and punctuation.
+- Correct any errors and add necessary punctuation and capitalization.
+- Preserve the speaker's tone, style, and regional language variants.
+- Do not change the original meaning or omit any parts of the text.
+
+Provide the corrected transcription only:\n\n{transcription}"""}
+                ],
+                max_tokens=1500  # Adjust as needed
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            self.logger.error(f"Error post-processing transcription: {str(e)}")
+            return transcription  # Return the original transcription if post-processing fails
+
 # Twilio WhatsApp Handler Class
 class TwilioWhatsAppHandler:
     def __init__(self):
@@ -196,6 +258,11 @@ class TwilioWhatsAppHandler:
         self.openai_client = OpenAI(api_key=self.openai_api_key)
         self.logger = logging.getLogger(f"{__name__}.TwilioWhatsAppHandler")
         self.stripe_handler = StripeHandler()  # Add this line to create a StripeHandler instance
+        self.voice_message_processor = VoiceMessageProcessor(
+            openai_client=self.openai_client,
+            llm_handler=self.llm_handler,
+            logger=self.logger
+        )
 
         if not all([self.account_sid, self.auth_token, self.openai_api_key, self.twilio_whatsapp_number]):
             raise ValueError("Missing required environment variables for TwilioWhatsAppHandler")
@@ -320,75 +387,6 @@ class TwilioWhatsAppHandler:
         except Exception as e:
             self.logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
 
-    async def transcribe_voice_message(self, voice_message_url: str) -> str:
-        try:
-            self.logger.info(f"Downloading voice message from URL: {voice_message_url}")
-            response = requests.get(voice_message_url, auth=(self.account_sid, self.auth_token))
-            response.raise_for_status()
-            audio_data = response.content
-            self.logger.info("Voice message downloaded successfully")
-
-            client = OpenAI(api_key=self.openai_api_key)
-            self.logger.info("Transcribing voice message using OpenAI")
-
-            audio_file = io.BytesIO(audio_data)
-            audio_file.name = "voice_message.ogg"
-
-            transcript = client.audio.transcriptions.create(model=TRANSCRIPTION_MODEL, file=audio_file)
-            self.logger.info("Transcription successful")
-
-            # Post-process the transcription using GPT-4o
-            post_processed_transcript = await self.post_process_transcription(transcript.text)
-            return post_processed_transcript
-        except Exception as e:
-            self.logger.exception("Error transcribing voice message")
-            return f"Error transcribing voice message: {str(e)}"
-
-    async def post_process_transcription(self, transcription: str) -> str:
-        try:
-            response = self.openai_client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": """You are an expert multilingual transcription assistant. Your task is to **post-process transcriptions of voice messages** in different languages, including but not limited to Spanish, Catalan, and English, to enhance their readability and accuracy **before they are summarized**. Specifically, you should:
-
-1. **Detect the language of the transcription** (most probably Spanish, Catalan, or English) and apply language-specific rules for spelling, grammar, and punctuation. Correct any errors while preserving regional language variants (e.g., Spain Spanish vs. Latin American Spanish, Catalan, or English dialects).
-2. **Add appropriate punctuation and capitalization** to clarify meaning and improve readability, without altering the speaker's intended message.
-3. **Preserve the original tone, style, and personal expressions** of the speaker, including colloquial phrases and regionalisms, based on the detected language.
-4. **Do not add, remove, or alter any content beyond what is necessary for correction**. Keep the text as close to the original meaning as possible.
-
-Provide the corrected transcription only, without any additional comments or explanations."""},
-                    {"role": "user", "content": f"""Please post-process the following transcription of a voice message. The transcription may be in Spanish, Catalan, or English. 
-
-**Instructions:**
-
-- Detect the language and apply language-specific corrections for spelling, grammar, and punctuation.
-- Correct any errors and add necessary punctuation and capitalization.
-- Preserve the speaker's tone, style, and regional language variants.
-- Do not change the original meaning or omit any parts of the text.
-
-Provide the corrected transcription only:\n\n{transcription}"""}
-                ],
-                max_tokens=1500  # Adjust as needed
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            self.logger.error(f"Error post-processing transcription: {str(e)}")
-            return transcription  # Return the original transcription if post-processing fails
-
-    def is_whitelisted(self, db: Session, phone_number: str) -> bool:
-        whitelisted = db.query(WhitelistedNumber).filter(
-            WhitelistedNumber.phone_number == phone_number,
-            WhitelistedNumber.expires_at > datetime.now(timezone.utc)
-        ).first()
-        return whitelisted is not None
-
-    async def send_subscription_message(self, to_number: str):
-        context = "User's free trial has expired and they need to subscribe."
-        message = "Subscription needed"
-        response = await self.llm_handler.generate_response(message, context)
-        response += f"\n\nPlease subscribe now:\n{self.stripe_handler.payment_link}"
-        await self.send_ai_response(to_number, response)
-
     async def send_templated_message(self, to_number: str, template_key: str, **kwargs):
         try:
             template = MESSAGE_TEMPLATES.get(template_key)
@@ -458,7 +456,11 @@ Provide the corrected transcription only:\n\n{transcription}"""}
             self.logger.error("No media found")
             raise ValueError("No media found")
 
-        transcription = await self.transcribe_voice_message(voice_message_url)
+        transcription = await self.voice_message_processor.process_voice_message(
+            voice_message_url,
+            self.account_sid,
+            self.auth_token
+        )
         self.logger.info(f"Transcription: {transcription[:50]}")
 
         embedding = self.generate_embedding(transcription)
@@ -466,6 +468,13 @@ Provide the corrected transcription only:\n\n{transcription}"""}
         await self.send_transcription(phone_number, transcription, embedding, db)
 
         return transcription
+
+    def is_whitelisted(self, db: Session, phone_number: str) -> bool:
+        whitelisted = db.query(WhitelistedNumber).filter(
+            WhitelistedNumber.phone_number == phone_number,
+            WhitelistedNumber.expires_at > datetime.now(timezone.utc)
+        ).first()
+        return whitelisted is not None
 
 # Create an instance of TwilioWhatsAppHandler
 twilio_whatsapp_handler = TwilioWhatsAppHandler()
