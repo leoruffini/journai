@@ -1,7 +1,6 @@
 # Standard library imports
 import io
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -9,7 +8,6 @@ from datetime import datetime, timezone
 from openai import OpenAI
 import requests
 import stripe
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -19,13 +17,16 @@ from twilio.rest import Client
 
 # Local imports
 from database import DATABASE_URL, Message, WhitelistedNumber, User, get_db
-
-load_dotenv()
+from config import (
+    BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL,
+    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, OPENAI_API_KEY,
+    TWILIO_WHATSAPP_NUMBER, LOG_LEVEL, MAX_WHATSAPP_MESSAGE_LENGTH,
+    TRANSCRIPTION_MODEL, LLM_MODEL, STRIPE_WEBHOOK_SECRET, STRIPE_API_KEY
+)
 
 # Configure logging
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=log_level,  # No need for getattr
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -34,16 +35,6 @@ app = FastAPI()
 
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
-
-BASE_URL = os.getenv('BASE_URL')
-STRIPE_PAYMENT_LINK = os.getenv('STRIPE_PAYMENT_LINK')
-STRIPE_CUSTOMER_PORTAL_URL = os.getenv('STRIPE_CUSTOMER_PORTAL_URL')
-if not all([BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL]):
-    raise ValueError("Missing required environment variables")
-
-MAX_WHATSAPP_MESSAGE_LENGTH = 1500
-TRANSCRIPTION_MODEL = "whisper-1"
-LLM_MODEL = "gpt-4o-mini"
 
 MESSAGE_TEMPLATES = {
     "welcome": "🎉 Hi! I'm Ada, your voice-to-text fairy! ✨🧚‍♀️\n\nYou've got 3 free transcription spells. Ready to try?\n\n🎙️ Send a voice message and watch the magic happen! 🚀",
@@ -106,10 +97,10 @@ class LLMHandler:
 
 class StripeHandler:
     def __init__(self):
-        self.api_key = os.getenv('STRIPE_API_KEY')
-        self.webhook_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
-        self.payment_link = os.getenv('STRIPE_PAYMENT_LINK')
-        self.customer_portal_url = os.getenv('STRIPE_CUSTOMER_PORTAL_URL')
+        self.api_key = STRIPE_API_KEY
+        self.webhook_secret = STRIPE_WEBHOOK_SECRET
+        self.payment_link = STRIPE_PAYMENT_LINK
+        self.customer_portal_url = STRIPE_CUSTOMER_PORTAL_URL
         stripe.api_key = self.api_key
 
         if not all([self.api_key, self.webhook_secret, self.payment_link, self.customer_portal_url]):
@@ -247,17 +238,17 @@ Provide the corrected transcription only:\n\n{transcription}"""}
 # Twilio WhatsApp Handler Class
 class TwilioWhatsAppHandler:
     def __init__(self):
-        self.account_sid = os.getenv('TWILIO_ACCOUNT_SID')
-        self.auth_token = os.getenv('TWILIO_AUTH_TOKEN')
-        self.openai_api_key = os.getenv('OPENAI_API_KEY')
-        self.twilio_whatsapp_number = os.getenv('TWILIO_WHATSAPP_NUMBER')
+        self.account_sid = TWILIO_ACCOUNT_SID
+        self.auth_token = TWILIO_AUTH_TOKEN
+        self.openai_api_key = OPENAI_API_KEY
+        self.twilio_whatsapp_number = TWILIO_WHATSAPP_NUMBER
         self.base_url = BASE_URL
         self.validator = RequestValidator(self.auth_token)
         self.twilio_client = Client(self.account_sid, self.auth_token)
         self.llm_handler = LLMHandler(api_key=self.openai_api_key)
         self.openai_client = OpenAI(api_key=self.openai_api_key)
         self.logger = logging.getLogger(f"{__name__}.TwilioWhatsAppHandler")
-        self.stripe_handler = StripeHandler()  # Add this line to create a StripeHandler instance
+        self.stripe_handler = StripeHandler()
         self.voice_message_processor = VoiceMessageProcessor(
             openai_client=self.openai_client,
             llm_handler=self.llm_handler,
@@ -484,11 +475,11 @@ async def whatsapp(request: Request, db: Session = Depends(get_db)):
     logger.debug("Received request to /whatsapp endpoint")
     return await twilio_whatsapp_handler.handle_whatsapp_request(request, db)
 
-logger.info(f"TWILIO_ACCOUNT_SID: {os.getenv('TWILIO_ACCOUNT_SID')[:8]}...")
-logger.info(f"TWILIO_AUTH_TOKEN: {os.getenv('TWILIO_AUTH_TOKEN')[:8]}...")
-logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:8]}...")
-logger.info(f"STRIPE_WEBHOOK_SECRET: {os.getenv('STRIPE_WEBHOOK_SECRET')[:16]}...")
-logger.info(f"DEBUG MODE: {os.getenv('LOG_LEVEL')}")
+logger.info(f"TWILIO_ACCOUNT_SID: {TWILIO_ACCOUNT_SID[:8]}...")
+logger.info(f"TWILIO_AUTH_TOKEN: {TWILIO_AUTH_TOKEN[:8]}...")
+logger.info(f"OPENAI_API_KEY: {OPENAI_API_KEY[:8]}...")
+logger.info(f"STRIPE_WEBHOOK_SECRET: {STRIPE_WEBHOOK_SECRET[:16]}...")
+logger.info(f"DEBUG MODE: {LOG_LEVEL}")
 
 # Create an instance of StripeHandler
 stripe_handler = StripeHandler()
@@ -525,6 +516,15 @@ async def webhook_received(request: Request, db: Session = Depends(get_db)):
     except stripe.error.SignatureVerificationError as e:
         logger.error(f"Invalid signature: {e}")
         raise HTTPException(status_code=400, detail='Invalid signature')
+    except stripe.error.AuthenticationError as e:
+        logger.error(f"Stripe authentication error: {e}")
+        raise HTTPException(status_code=500, detail='Stripe authentication error')
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
+        raise HTTPException(status_code=500, detail='Stripe error')
+    except Exception as e:
+        logger.error(f"Unexpected error in webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail='Internal server error')
 
 @app.get("/success")
 async def success(request: Request):

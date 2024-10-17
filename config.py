@@ -1,0 +1,22 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_URL = os.getenv('BASE_URL')
+STRIPE_PAYMENT_LINK = os.getenv('STRIPE_PAYMENT_LINK')
+STRIPE_CUSTOMER_PORTAL_URL = os.getenv('STRIPE_CUSTOMER_PORTAL_URL')
+STRIPE_API_KEY = os.getenv('STRIPE_API_KEY')
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WHATSAPP_NUMBER')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+
+MAX_WHATSAPP_MESSAGE_LENGTH = 1500
+TRANSCRIPTION_MODEL = "whisper-1"
+LLM_MODEL = "gpt-4o-mini"
+
+if not all([BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL]):
+    raise ValueError("Missing required environment variables")
