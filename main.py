@@ -16,6 +16,7 @@ from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 
 # Local imports
+from handlers.llm_handler import LLMHandler
 from database import DATABASE_URL, Message, WhitelistedNumber, User, get_db
 from config import (
     BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL,
@@ -37,49 +38,6 @@ app = FastAPI()
 
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
-
-class LLMHandler:
-    def __init__(self, api_key: str, model: str = LLM_MODEL):
-        self.api_key = api_key
-        self.model = model
-        self.client = OpenAI(api_key=self.api_key)
-        self.logger = logging.getLogger(f"{__name__}.LLMHandler")
-
-    async def generate_response(self, message: str, context: str) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": """You are Ada, a friendly AI assistant for voice transcription. 
-                    Engage in brief, friendly conversation while gently steering users towards using the service or subscribing.
-                    Keep responses under 50 words. Be responsive to the user's message, but always relate back to the transcription service.
-                    Do not offer free trials or transcription services to users who have used all their free trials and are not subscribed.
-                    For users with free trials, encourage them to use the service.
-                    For subscribed users, remind them of the benefits and encourage use.
-                    For users without free trials or subscription, focus on the benefits of subscribing."""},
-                    {"role": "user", "content": f"Context: {context}\nUser message: {message}\nRespond as Ada in under 50 words:"}
-                ]
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f"Error generating AI response: {str(e)}")
-            return "I'm here to help with voice transcription. How can I assist you today?"
-
-    async def generate_summary(self, transcription: str) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": """You are Ada, a top-tier AI assistant specializing in summarizing voice message transcriptions. Your summaries must **absolutely not exceed 1500 characters**. Before finalizing the summary, **internally count the characters** to ensure compliance. It's essential to **preserve the original tone, conversational style, and personal touches of the speaker**, including any colloquial expressions, rhetorical questions, and informal language. Maintain the original language variant and regional differences (e.g., Spain Spanish vs. Latin American Spanish) when summarizing. Do not mention the character count in your final summary."""},
-                    {"role": "user", "content": f"""Please summarize the following transcription. Ensure the summary is concise and complete, capturing the key points succinctly. It is crucial that the summary **does not exceed 1500 characters**. **Internally verify the character count** before providing the final summary. Focus on key points while **maintaining the speaker's tone, conversational style, and personal expressions**. Preserve any colloquial phrases, rhetorical questions, and regional language variants, including any regional Spanish differences:\n\n{transcription}"""}
-                ],
-                max_tokens=300  # Adjust as needed to ensure the summary stays under 1500 characters
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            self.logger.error(f"Error generating summary: {str(e)}")
-            return "I apologize, but I encountered an error while summarizing your message. Please try again later."
-
 
 class StripeHandler:
     def __init__(self):
@@ -243,10 +201,6 @@ class TwilioWhatsAppHandler:
 
         if not all([self.account_sid, self.auth_token, self.openai_api_key, self.twilio_whatsapp_number]):
             raise ValueError("Missing required environment variables for TwilioWhatsAppHandler")
-
-    def generate_embedding(self, text: str) -> list[float]:
-        response = self.openai_client.embeddings.create(input=text, model="text-embedding-ada-002")
-        return response.data[0].embedding
 
     async def handle_whatsapp_request(self, request: Request, db: Session) -> JSONResponse:
         self.logger.debug("Received WhatsApp request")
@@ -487,7 +441,8 @@ class TwilioWhatsAppHandler:
         )
         self.logger.info(f"Transcription: {transcription[:50]}")
 
-        embedding = self.generate_embedding(transcription)
+        # Use the llm_handler instance to generate the embedding
+        embedding = self.llm_handler.generate_embedding(transcription)
 
         await self.send_transcription(phone_number, transcription, embedding, db)
 
