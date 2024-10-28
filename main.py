@@ -21,7 +21,8 @@ from config import (
     BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL,
     TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, OPENAI_API_KEY,
     TWILIO_WHATSAPP_NUMBER, LOG_LEVEL, MAX_WHATSAPP_MESSAGE_LENGTH,
-    TRANSCRIPTION_MODEL, LLM_MODEL, STRIPE_WEBHOOK_SECRET, STRIPE_API_KEY
+    TRANSCRIPTION_MODEL, LLM_MODEL, STRIPE_WEBHOOK_SECRET, STRIPE_API_KEY,
+    ADMIN_PHONE_NUMBER
 )
 from message_templates import get_message_template
 
@@ -340,14 +341,31 @@ class TwilioWhatsAppHandler:
             db.rollback()
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
 
+    async def send_admin_notification(self, user_phone: str, summary_generated: bool):
+        try:
+            message = f"New transcription request from {user_phone}."
+            if summary_generated:
+                message += " A summary was generated."
+            
+            self.twilio_client.messages.create(
+                body=message,
+                from_=self.twilio_whatsapp_number,
+                to=ADMIN_PHONE_NUMBER
+            )
+            self.logger.info(f"Admin notification sent for user {user_phone}")
+        except Exception as e:
+            self.logger.error(f"Failed to send admin notification: {str(e)}")
+
     async def send_transcription(self, to_number: str, transcription: str, embedding: list[float], db: Session):
         try:
             db_message = Message(phone_number=to_number, embedding=embedding)
             db_message.text = transcription
 
+            summary_generated = False
             if len(transcription) <= MAX_WHATSAPP_MESSAGE_LENGTH:
                 await self.send_templated_message(to_number, "transcription", transcription=transcription)
             else:
+                summary_generated = True
                 message_hash = uuid.uuid4().hex
                 self.logger.info(f"Generated hash for message: {message_hash}")
                 db_message.hash = message_hash
@@ -359,6 +377,9 @@ class TwilioWhatsAppHandler:
 
             db.add(db_message)
             db.commit()
+
+            # Send admin notification
+            await self.send_admin_notification(to_number, summary_generated)
 
         except Exception as e:
             self.logger.error(f"Failed to send transcription to {to_number}: {str(e)}")

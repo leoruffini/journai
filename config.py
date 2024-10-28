@@ -18,5 +18,7 @@ MAX_WHATSAPP_MESSAGE_LENGTH = 1500
 TRANSCRIPTION_MODEL = "whisper-1"
 LLM_MODEL = "gpt-4o-mini"
 
+ADMIN_PHONE_NUMBER = os.getenv('ADMIN_PHONE_NUMBER')
+
 if not all([BASE_URL, STRIPE_PAYMENT_LINK, STRIPE_CUSTOMER_PORTAL_URL]):
     raise ValueError("Missing required environment variables")
