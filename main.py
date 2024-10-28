@@ -313,6 +313,7 @@ class TwilioWhatsAppHandler:
 
                     try:
                         transcription = await self.process_voice_message(phone_number, voice_message_url, db)
+                        await self.send_admin_notification(phone_number, len(transcription) > MAX_WHATSAPP_MESSAGE_LENGTH, db)
                     except ValueError as e:
                         return JSONResponse(content={"message": str(e)}, status_code=400)
 
@@ -331,6 +332,10 @@ class TwilioWhatsAppHandler:
             else:
                 self.logger.info(f"User {phone_number} has no free trials remaining and is not subscribed")
                 await self.send_subscription_reminder(phone_number)
+                try:
+                    await self.send_admin_notification(phone_number, False, db)
+                except Exception as e:
+                    self.logger.error(f"Admin notification failed: {str(e)}")
                 return JSONResponse(content={"message": "User not subscribed"}, status_code=403)
 
         except HTTPException as http_exception:
@@ -341,11 +346,31 @@ class TwilioWhatsAppHandler:
             db.rollback()
             return JSONResponse(content={"message": "Internal server error"}, status_code=500)
 
-    async def send_admin_notification(self, user_phone: str, summary_generated: bool):
+    async def send_admin_notification(self, user_phone: str, summary_generated: bool, db: Session):
         try:
-            message = f"New transcription request from {user_phone}."
+            # Get user status info from db (reuse existing session)
+            user = db.query(User).filter_by(phone_number=user_phone).first()
+            whitelisted = db.query(WhitelistedNumber).filter_by(phone_number=user_phone).first()
+
+            # Build status message
+            status_parts = []
+            
+            if not user:
+                status_parts.append("📥 NEW USER")
+            elif whitelisted and whitelisted.expires_at > datetime.now(timezone.utc):
+                status_parts.append(f"💳 PAYING CUSTOMER (expires: {whitelisted.expires_at.strftime('%Y-%m-%d')})")
+            elif user.free_trial_remaining > 0:
+                status_parts.append(f"🎁 FREE TRIAL USER ({user.free_trial_remaining} remaining)")
+            else:
+                status_parts.append("🚫 BLOCKED USER (no trials/subscription)")
+
+            message = (
+                f"Transcription request from {user_phone}\n"
+                f"Status: {' '.join(status_parts)}"
+            )
+            
             if summary_generated:
-                message += " A summary was generated."
+                message += "\nℹ️ Summary was generated"
             
             self.twilio_client.messages.create(
                 body=message,
@@ -358,10 +383,13 @@ class TwilioWhatsAppHandler:
 
     async def send_transcription(self, to_number: str, transcription: str, embedding: list[float], db: Session):
         try:
+            # 1. Create message record
             db_message = Message(phone_number=to_number, embedding=embedding)
             db_message.text = transcription
 
             summary_generated = False
+            
+            # 2. Send user messages
             if len(transcription) <= MAX_WHATSAPP_MESSAGE_LENGTH:
                 await self.send_templated_message(to_number, "transcription", transcription=transcription)
             else:
@@ -375,14 +403,13 @@ class TwilioWhatsAppHandler:
                 summary = await self.llm_handler.generate_summary(transcription)
                 await self.send_templated_message(to_number, "long_transcription_summary", summary=summary)
 
+            # 3. Save to database
             db.add(db_message)
             db.commit()
 
-            # Send admin notification
-            await self.send_admin_notification(to_number, summary_generated)
-
         except Exception as e:
             self.logger.error(f"Failed to send transcription to {to_number}: {str(e)}")
+            raise  # Re-raise the exception for main error handling
 
     async def send_templated_message(self, to_number: str, template_key: str, **kwargs):
         try:
