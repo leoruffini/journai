@@ -12,6 +12,8 @@ from twilio.rest import Client
 from handlers.llm_handler import LLMHandler
 from handlers.voice_message_processor import VoiceMessageProcessor
 from handlers.stripe_handler import StripeHandler
+from handlers.message_sender import MessageSender
+
 from database import User, WhitelistedNumber, Message
 from config import (
     BASE_URL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, OPENAI_API_KEY,
@@ -37,7 +39,10 @@ class TwilioWhatsAppHandler:
             llm_handler=self.llm_handler,
             logger=self.logger
         )
-
+        self.message_sender = MessageSender(
+            account_sid=self.account_sid,
+            auth_token=self.auth_token
+        )
         if not all([self.account_sid, self.auth_token, self.openai_api_key, self.twilio_whatsapp_number]):
             raise ValueError("Missing required environment variables for TwilioWhatsAppHandler")
 
@@ -205,21 +210,7 @@ class TwilioWhatsAppHandler:
             raise  # Re-raise the exception for main error handling
 
     async def send_templated_message(self, to_number: str, template_key: str, **kwargs):
-        try:
-            template = get_message_template(template_key)
-            if not template:
-                self.logger.error(f"Template not found: {template_key}")
-                return
-
-            message_body = template.format(**kwargs)
-            message = self.twilio_client.messages.create(
-                body=message_body,
-                from_=self.twilio_whatsapp_number,
-                to=f'whatsapp:{to_number}'
-            )
-            self.logger.info(f"Message sent to {to_number}. Message SID: {message.sid}")
-        except Exception as e:
-            self.logger.error(f"Failed to send message to {to_number}: {str(e)}")
+        await self.message_sender.send_templated_message(to_number, template_key, **kwargs)
 
     async def send_welcome_message(self, to_number: str):
         await self.send_templated_message(to_number, "welcome")
