@@ -13,6 +13,7 @@ from handlers.llm_handler import LLMHandler
 from handlers.voice_message_processor import VoiceMessageProcessor
 from handlers.stripe_handler import StripeHandler
 from handlers.message_sender import MessageSender
+from handlers.user_manager import UserManager
 
 from database import User, WhitelistedNumber, Message
 from config import (
@@ -22,7 +23,7 @@ from config import (
 from message_templates import get_message_template
 
 class TwilioWhatsAppHandler:
-    def __init__(self):
+    def __init__(self, db: Session):
         self.account_sid = TWILIO_ACCOUNT_SID
         self.auth_token = TWILIO_AUTH_TOKEN
         self.openai_api_key = OPENAI_API_KEY
@@ -43,6 +44,7 @@ class TwilioWhatsAppHandler:
             account_sid=self.account_sid,
             auth_token=self.auth_token
         )
+        self.user_manager = UserManager(db)
         if not all([self.account_sid, self.auth_token, self.openai_api_key, self.twilio_whatsapp_number]):
             raise ValueError("Missing required environment variables for TwilioWhatsAppHandler")
 
@@ -62,17 +64,15 @@ class TwilioWhatsAppHandler:
                 return JSONResponse(content={"message": "Invalid request"}, status_code=400)
 
             phone_number = form_data.get('From', '').replace('whatsapp:', '')
-            user = db.query(User).filter_by(phone_number=phone_number).first()
-            is_subscribed = self.is_whitelisted(db, phone_number)
+            user = self.user_manager.get_user_by_phone(phone_number)
+            is_subscribed = self.user_manager.is_whitelisted(phone_number)
 
             media_type = form_data.get('MediaContentType0', '')
             is_voice_message = media_type.startswith('audio/')
 
             if not user:
                 # New user
-                user = User(phone_number=phone_number)
-                db.add(user)
-                db.commit()
+                user = self.user_manager.create_user(phone_number)
 
                 if is_voice_message:
                     await self.send_welcome_with_transcription_info(phone_number)
@@ -116,8 +116,7 @@ class TwilioWhatsAppHandler:
                         return JSONResponse(content={"message": str(e)}, status_code=400)
 
                     if not is_subscribed and user.free_trial_remaining > 0:
-                        user.free_trial_remaining -= 1
-                        db.commit()
+                        self.user_manager.update_free_trial(user)
                         self.logger.info(f"User {phone_number} has {user.free_trial_remaining} free trials remaining")
 
                         if user.free_trial_remaining == 0:
@@ -147,8 +146,8 @@ class TwilioWhatsAppHandler:
     async def send_admin_notification(self, user_phone: str, summary_generated: bool, db: Session):
         try:
             # Get user status info from db (reuse existing session)
-            user = db.query(User).filter_by(phone_number=user_phone).first()
-            whitelisted = db.query(WhitelistedNumber).filter_by(phone_number=user_phone).first()
+            user = self.user_manager.get_user_by_phone(user_phone)
+            whitelisted = self.user_manager.is_whitelisted(user_phone)
 
             # Build status message
             status_parts = []
@@ -277,10 +276,3 @@ class TwilioWhatsAppHandler:
         await self.send_transcription(phone_number, transcription, embedding, db)
 
         return transcription
-
-    def is_whitelisted(self, db: Session, phone_number: str) -> bool:
-        whitelisted = db.query(WhitelistedNumber).filter(
-            WhitelistedNumber.phone_number == phone_number,
-            WhitelistedNumber.expires_at > datetime.now(timezone.utc)
-        ).first()
-        return whitelisted is not None

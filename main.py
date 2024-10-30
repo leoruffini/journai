@@ -42,11 +42,10 @@ app = FastAPI()
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
-# Create an instance of TwilioWhatsAppHandler
-twilio_whatsapp_handler = TwilioWhatsAppHandler()
-
+# Create an instance of TwilioWhatsAppHandler with dependency injection
 @app.post("/whatsapp", response_model=None)
 async def whatsapp(request: Request, db: Session = Depends(get_db)):
+    twilio_whatsapp_handler = TwilioWhatsAppHandler(db)
     logger.debug("Received request to /whatsapp endpoint")
     return await twilio_whatsapp_handler.handle_whatsapp_request(request, db)
 
