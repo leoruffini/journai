@@ -154,10 +154,14 @@ class TwilioWhatsAppHandler:
 
             if not user:
                 status_parts.append("📥 NEW USER")
-            elif whitelisted and whitelisted.expires_at > datetime.now(timezone.utc):
-                status_parts.append(f"💳 PAYING CUSTOMER (expires: {whitelisted.expires_at.strftime('%Y-%m-%d')})")
+            elif isinstance(whitelisted, WhitelistedNumber) or whitelisted is True:
+                whitelist_record = db.query(WhitelistedNumber).filter_by(phone_number=user_phone).first()
+                if whitelist_record and whitelist_record.expires_at and whitelist_record.expires_at > datetime.now(timezone.utc):
+                    status_parts.append(f"💳 PAYING CUSTOMER (expires: {whitelist_record.expires_at.strftime('%Y-%m-%d')})")
+                else:
+                    status_parts.append("💳 PAYING CUSTOMER (no expiration)")
             elif user.free_trial_remaining > 0:
-                status_parts.append(f"🎁 FREE TRIAL USER ({user.free_trial_remaining} remaining)")
+                status_parts.append(f"🎁 FREE TRIAL USER ({user.free_trial_remaining - 1} remaining)")
             else:
                 status_parts.append("🚫 BLOCKED USER (no trials/subscription)")
 
