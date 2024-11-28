@@ -55,8 +55,9 @@ logger.info(f"OPENAI_API_KEY: {OPENAI_API_KEY[:8]}...")
 logger.info(f"STRIPE_WEBHOOK_SECRET: {STRIPE_WEBHOOK_SECRET[:16]}...")
 logger.info(f"DEBUG MODE: {LOG_LEVEL}")
 
-# Create an instance of StripeHandler
-stripe_handler = StripeHandler()
+# Initialize StripeHandler with TwilioWhatsAppHandler
+twilio_whatsapp_handler = TwilioWhatsAppHandler(get_db())
+stripe_handler = StripeHandler(twilio_handler=twilio_whatsapp_handler)
 
 @app.post("/create-checkout-session")
 async def create_checkout_session():

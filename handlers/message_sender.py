@@ -1,7 +1,9 @@
-from twilio.rest import Client
+# message_sender.py defines a class for sending templated messages via WhatsApp using the Twilio API
+# The send_templated_message method is used to send a message to a WhatsApp number with a given template from message_templates.py
+from twilio.rest import Client #Client is the Twilio API client class that allows us to send messages via WhatsApp
 from config import TWILIO_WHATSAPP_NUMBER
 import logging
-from message_templates import get_message_template
+from message_templates import get_message_template #function that returns a message template from message_templates.py
 
 class MessageSender:
     def __init__(self, account_sid: str, auth_token: str):
@@ -17,7 +19,8 @@ class MessageSender:
                 return
 
             message_body = template.format(**kwargs)
-            message = self.client.messages.create(
+            #Create and send a message object using the Twilio API:
+            message = self.client.messages.create(  
                 body=message_body,
                 from_=self.twilio_whatsapp_number,
                 to=f'whatsapp:{to_number}'

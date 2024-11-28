@@ -73,7 +73,11 @@ class StripeHandler:
                     db.commit()
                     logger.info(f"Added or updated whitelist for phone number: {phone_number}, expires at: {current_period_end}")
                     if self.twilio_handler:
-                        await self.twilio_handler.send_subscription_confirmation(phone_number)
+                        try:
+                            await self.twilio_handler.send_templated_message(phone_number, "subscription_confirmation")
+                            logger.info(f"Subscription confirmation message sent to {phone_number}")
+                        except Exception as e:
+                            logger.error(f"Failed to send subscription confirmation message to {phone_number}: {str(e)}")
                 else:
                     logger.error(f"No phone number found for customer {customer_id}")
             else:
@@ -98,7 +102,14 @@ class StripeHandler:
                 db.commit()
                 logger.info(f"Removed {phone_number} from whitelist due to subscription deletion")
                 if self.twilio_handler:
-                    await self.twilio_handler.send_subscription_cancelled_message(phone_number)
+                    logger.info(f"Attempting to send subscription cancelled message to {phone_number}")
+                    try:
+                        await self.twilio_handler.send_templated_message(phone_number, "subscription_cancelled")
+                        logger.info(f"Subscription cancelled message sent to {phone_number}")
+                    except Exception as e:
+                        logger.error(f"Failed to send subscription cancelled message to {phone_number}: {str(e)}")
+                else:
+                    logger.error("Twilio handler is not initialized")
             else:
                 logger.error(f"No phone number found for customer {customer_id}")
         else:

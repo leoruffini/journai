@@ -34,7 +34,7 @@ class TwilioWhatsAppHandler:
         self.llm_handler = LLMHandler(api_key=self.openai_api_key)
         self.openai_client = OpenAI(api_key=self.openai_api_key)
         self.logger = logging.getLogger(f"{__name__}.TwilioWhatsAppHandler")
-        self.stripe_handler = StripeHandler()
+        self.stripe_handler = StripeHandler(twilio_handler=self)
         self.voice_message_processor = VoiceMessageProcessor(
             openai_client=self.openai_client,
             llm_handler=self.llm_handler,
@@ -75,9 +75,9 @@ class TwilioWhatsAppHandler:
                 user = self.user_manager.create_user(phone_number)
 
                 if is_voice_message:
-                    await self.send_welcome_with_transcription_info(phone_number)
+                    await self.send_templated_message(phone_number, "welcome_with_transcription")
                 else:
-                    await self.send_welcome_message(phone_number)
+                    await self.send_templated_message(phone_number, "welcome")
 
                 if not is_voice_message:
                     return JSONResponse(content={"message": "Welcome message sent"}, status_code=200)
@@ -100,7 +100,7 @@ class TwilioWhatsAppHandler:
                 if not is_subscribed and user.free_trial_remaining == 0:
                     ai_response += f"\n\n🔗 Subscribe here: Please subscribe now:\n{self.stripe_handler.payment_link}"
 
-                await self.send_ai_response(phone_number, ai_response)
+                await self.send_templated_message(phone_number, "ai_response", response=ai_response)
                 return JSONResponse(content={"message": "Text message handled"}, status_code=200)
 
             if is_subscribed or user.free_trial_remaining > 0:
@@ -124,7 +124,7 @@ class TwilioWhatsAppHandler:
 
                     return JSONResponse(content={"message": "Voice message processed successfully", "transcription": transcription}, status_code=200)
                 else:
-                    await self.send_unsupported_media_message(phone_number, media_type)
+                    await self.send_templated_message(phone_number, "unsupported_media", media_type=media_type)
                     return JSONResponse(content={"message": f"Unsupported media type: {media_type}"}, status_code=400)
             else:
                 self.logger.info(f"User {phone_number} has no free trials remaining and is not subscribed")
@@ -211,27 +211,6 @@ class TwilioWhatsAppHandler:
     async def send_templated_message(self, to_number: str, template_key: str, **kwargs):
         await self.message_sender.send_templated_message(to_number, template_key, **kwargs)
 
-    async def send_welcome_message(self, to_number: str):
-        await self.send_templated_message(to_number, "welcome")
-
-    async def send_welcome_with_transcription_info(self, to_number: str):
-        await self.send_templated_message(to_number, "welcome_with_transcription")
-
-    async def send_processing_confirmation(self, to_number: str):
-        await self.send_templated_message(to_number, "processing_confirmation")
-
-    async def send_subscription_cancelled_message(self, to_number: str):
-        await self.send_templated_message(to_number, "subscription_cancelled")
-
-    async def send_unsupported_media_message(self, to_number: str, media_type: str):
-        await self.send_templated_message(to_number, "unsupported_media", media_type=media_type)
-
-    async def send_text_message_with_free_trials(self, to_number: str, free_trial_remaining: int):
-        await self.send_templated_message(to_number, "text_message_with_free_trials", free_trial_remaining=free_trial_remaining)
-
-    async def send_subscribed_user_text_message(self, to_number: str):
-        await self.send_templated_message(to_number, "subscribed_user_text_message")
-
     async def send_last_free_trial_message(self, to_number: str):
         context = "User has just used their last free trial."
         message = "Last free trial used"
@@ -246,18 +225,8 @@ class TwilioWhatsAppHandler:
         response += f"\n\n🔗 {self.stripe_handler.payment_link}"
         await self.send_templated_message(to_number, "subscription_reminder", message=response)
 
-    async def send_ai_response(self, to_number: str, response: str):
-        await self.send_templated_message(to_number, "ai_response", response=response)
-
-    async def send_subscription_confirmation(self, to_number: str):
-        context = "User has successfully subscribed to the service."
-        message = "Subscription confirmation"
-        response = await self.llm_handler.generate_response(message, context)
-        response += f"\n\n```MANAGE YOUR SUBSCRIPTION: {self.stripe_handler.customer_portal_url}```"
-        await self.send_templated_message(to_number, "subscription_confirmation", response=response)
-
     async def process_voice_message(self, phone_number: str, voice_message_url: str, db: Session) -> str:
-        await self.send_processing_confirmation(phone_number)
+        await self.send_templated_message(phone_number, "processing_confirmation")
 
         if not voice_message_url:
             self.logger.error("No media found")
